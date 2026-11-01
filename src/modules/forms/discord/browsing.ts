@@ -154,7 +154,10 @@ export class FormBrowsing {
 			.join('\n\n');
 		return panel(
 			`## Your submissions\n${description || 'You have no submissions yet.'}\n\nPage ${page + 1} of ${pages}`,
-			[navigation(`zf:b:mine:${actorId}`, page, pages)]
+			[
+				navigation(`zf:b:mine:${actorId}`, page, pages),
+				buttons(button('zf:directory:page:0', 'Back to forms'))
+			]
 		);
 	}
 
@@ -176,7 +179,10 @@ export class FormBrowsing {
 		const { page, pages } = pagination(requestedPage, previewPages.length, 1);
 		return panel(
 			`## Preview: ${safe(form.data.name)}\n${safe(form.data.description)}\n\n${previewPages[page] ?? 'No questions yet.'}\n\nPage ${page + 1} of ${pages}`,
-			[navigation(`zf:b:preview:${form.id}:${actorId}:${form.data.revision}`, page, pages)]
+			[
+				navigation(`zf:b:preview:${form.id}:${actorId}:${form.data.revision}`, page, pages),
+				buttons(button(`zf:m:${form.id}:${actorId}:back`, 'Back to form'))
+			]
 		);
 	}
 }

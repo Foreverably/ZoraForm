@@ -7,9 +7,11 @@ import {
 	ModalBuilder,
 	TextInputBuilder,
 	TextInputStyle,
-	MessageFlags,
+	LabelBuilder,
+	ChannelSelectMenuBuilder,
+	ChannelType,
 	type ButtonInteraction,
-	type StringSelectMenuInteraction,
+	type AnySelectMenuInteraction,
 	type ModalSubmitInteraction
 } from 'discord.js';
 import { randomUUID } from 'node:crypto';
@@ -18,9 +20,10 @@ import { DiscordDelivery } from './delivery-worker';
 import { formQuestionSchema, discordSnowflakeSchema } from '../domain/schemas';
 import { FormError } from '../domain/rules';
 import type { FormConfiguration, FormQuestion } from '../domain/types';
-import { managePanel, panel } from './components';
+import { accessPanel, updateAccessList } from './access-panel';
+import { managePanel, panel, buttons, button } from './components';
 
-type BuilderInteraction = ButtonInteraction | StringSelectMenuInteraction | ModalSubmitInteraction;
+type BuilderInteraction = ButtonInteraction | AnySelectMenuInteraction | ModalSubmitInteraction;
 interface ModalField {
 	id: string;
 	label: string;
@@ -33,12 +36,11 @@ function modal(customId: string, title: string, fields: ModalField[]) {
 	return new ModalBuilder()
 		.setCustomId(customId)
 		.setTitle(title)
-		.addComponents(
+		.addLabelComponents(
 			fields.map((field) =>
-				new ActionRowBuilder<TextInputBuilder>().addComponents(
+				new LabelBuilder().setLabel(field.label).setTextInputComponent(
 					new TextInputBuilder()
 						.setCustomId(field.id)
-						.setLabel(field.label.slice(0, 45))
 						.setStyle(field.multiline ? TextInputStyle.Paragraph : TextInputStyle.Short)
 						.setRequired(field.required !== false)
 						.setMaxLength(field.id === 'choices' ? 2500 : 1000)
@@ -46,16 +48,6 @@ function modal(customId: string, title: string, fields: ModalField[]) {
 				)
 			)
 		);
-}
-
-function parseIds(value: string) {
-	const identifiers = value.split(/[\s,]+/).filter(Boolean);
-
-	if (identifiers.length > 100) {
-		throw new FormError('Use no more than 100 IDs in each list.');
-	}
-
-	return [...new Set(identifiers.map((identifier) => discordSnowflakeSchema.parse(identifier)))];
 }
 
 export class FormBuilder {
@@ -99,10 +91,40 @@ export class FormBuilder {
 		}
 
 		if (interaction.isModalSubmit()) {
-			await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+			if (!interaction.isFromMessage()) {
+				throw new FormError('Open this editor from the form panel.');
+			}
+
+			await interaction.deferUpdate();
 			await this.saveModal(interaction, segments, form.data);
 			await interaction.editReply(
 				managePanel(await this.formService.findForm(formId), interaction.user.id)
+			);
+			return;
+		}
+
+		if (segments[1] === 'access') {
+			await interaction.deferUpdate();
+
+			if (segments[5] !== 'open') {
+				if (!interaction.isAnySelectMenu()) {
+					throw new FormError('Use the user or role selector.');
+				}
+
+				await this.formService.editFormDraft(
+					formId,
+					guild.id,
+					interaction.user.id,
+					(configuration) => updateAccessList(configuration, interaction, segments)
+				);
+			}
+
+			await interaction.editReply(
+				accessPanel(
+					await this.formService.findForm(formId),
+					interaction.user.id,
+					segments[4]
+				)
 			);
 			return;
 		}
@@ -138,7 +160,7 @@ export class FormBuilder {
 				return;
 			}
 
-			await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+			await interaction.deferUpdate();
 			await this.formService.editFormDraft(
 				formId,
 				guild.id,
@@ -179,34 +201,8 @@ export class FormBuilder {
 		}
 
 		if (action === 'access') {
-			await interaction.showModal(
-				modal(modalId, 'Applicant access', [
-					{
-						id: 'allow',
-						label: 'Allowed role IDs (any; blank for everyone)',
-						value: form.data.allowRoles.join(', '),
-						required: false
-					},
-					{
-						id: 'deny',
-						label: 'Blacklisted role IDs (always deny)',
-						value: form.data.denyRoles.join(', '),
-						required: false
-					},
-					{
-						id: 'require',
-						label: 'Required role IDs (all)',
-						value: form.data.requiredRoles.join(', '),
-						required: false
-					},
-					{
-						id: 'blacklist',
-						label: 'Blocked user IDs for this form',
-						value: form.data.blacklist.join(', '),
-						required: false
-					}
-				])
-			);
+			await interaction.deferUpdate();
+			await interaction.editReply(accessPanel(form, interaction.user.id));
 			return;
 		}
 
@@ -240,13 +236,22 @@ export class FormBuilder {
 
 		if (action === 'review') {
 			await interaction.showModal(
-				modal(modalId, 'Staff review', [
-					{
-						id: 'channel',
-						label: 'Submission channel ID',
-						value: form.data.reviewChannelId
-					}
-				])
+				new ModalBuilder()
+					.setCustomId(modalId)
+					.setTitle('Staff review')
+					.addLabelComponents(
+						new LabelBuilder()
+							.setLabel('Submission channel')
+							.setDescription('Channel permissions control who can read submissions.')
+							.setChannelSelectMenuComponent(
+								new ChannelSelectMenuBuilder()
+									.setCustomId('channel')
+									.setChannelTypes(ChannelType.GuildText)
+									.setDefaultChannels(form.data.reviewChannelId)
+									.setMinValues(1)
+									.setMaxValues(1)
+							)
+					)
 			);
 			return;
 		}
@@ -264,7 +269,7 @@ export class FormBuilder {
 			return;
 		}
 
-		await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+		await interaction.deferUpdate();
 
 		if (action === 'add') {
 			await interaction.editReply(
@@ -281,7 +286,8 @@ export class FormBuilder {
 									value: type
 								}))
 							)
-					)
+					),
+					buttons(button(`zf:m:${formId}:${interaction.user.id}:back`, 'Back to form'))
 				])
 			);
 			return;
@@ -306,7 +312,8 @@ export class FormBuilder {
 									value: String(index)
 								}))
 							)
-					)
+					),
+					buttons(button(`zf:m:${formId}:${interaction.user.id}:back`, 'Back to form'))
 				])
 			);
 			return;
@@ -509,15 +516,6 @@ export class FormBuilder {
 						description: value('description')
 					};
 				}
-				if (action === 'access') {
-					return {
-						...configuration,
-						allowRoles: parseIds(value('allow')),
-						denyRoles: parseIds(value('deny')),
-						requiredRoles: parseIds(value('require')),
-						blacklist: parseIds(value('blacklist'))
-					};
-				}
 				if (action === 'policy') {
 					return {
 						...configuration,
@@ -530,7 +528,9 @@ export class FormBuilder {
 				if (action === 'review') {
 					return {
 						...configuration,
-						reviewChannelId: discordSnowflakeSchema.parse(value('channel'))
+						reviewChannelId: discordSnowflakeSchema.parse(
+							interaction.fields.getSelectedChannels('channel', true).first()!.id
+						)
 					};
 				}
 

@@ -1,20 +1,20 @@
 import {
-	ActionRowBuilder,
+	LabelBuilder,
 	ModalBuilder,
 	TextInputBuilder,
 	TextInputStyle,
 	MessageFlags,
 	type ButtonInteraction,
-	type StringSelectMenuInteraction,
+	type AnySelectMenuInteraction,
 	type ModalSubmitInteraction
 } from 'discord.js';
 import { formsRuntime } from '../runtime';
-import { explainFormError, managePanel, panel } from './components';
+import { explainFormError, managePanel, panel, buttons, button } from './components';
 import { FormError } from '../domain/rules';
 
-type FormInteraction = ButtonInteraction | StringSelectMenuInteraction | ModalSubmitInteraction;
+type FormInteraction = ButtonInteraction | AnySelectMenuInteraction | ModalSubmitInteraction;
 
-async function browse(interaction: ButtonInteraction | StringSelectMenuInteraction) {
+async function browse(interaction: ButtonInteraction | AnySelectMenuInteraction) {
 	const runtime = formsRuntime();
 	const segments = interaction.customId.split(':');
 	const kind = segments[2];
@@ -142,19 +142,20 @@ export async function routeFormInteraction(interaction: FormInteraction) {
 									? 'Accept submission'
 									: 'Reject submission'
 						)
-						.addComponents(
-							new ActionRowBuilder<TextInputBuilder>().addComponents(
-								new TextInputBuilder()
-									.setCustomId('reason')
-									.setLabel(
-										action === 'reply'
-											? 'Message sent to the applicant'
-											: 'Reason sent to the applicant'
-									)
-									.setStyle(TextInputStyle.Paragraph)
-									.setMaxLength(1000)
-									.setRequired(true)
-							)
+						.addLabelComponents(
+							new LabelBuilder()
+								.setLabel(
+									action === 'reply'
+										? 'Message sent to the applicant'
+										: 'Reason sent to the applicant'
+								)
+								.setTextInputComponent(
+									new TextInputBuilder()
+										.setCustomId('reason')
+										.setStyle(TextInputStyle.Paragraph)
+										.setMaxLength(1000)
+										.setRequired(true)
+								)
 						)
 				);
 				return;
@@ -195,7 +196,10 @@ export async function routeFormInteraction(interaction: FormInteraction) {
 		}
 
 		if (route === 's' || route === 'directory') {
-			if (interaction.isModalSubmit()) {
+			if (
+				interaction.isModalSubmit() ||
+				(!interaction.isButton() && !interaction.isStringSelectMenu())
+			) {
 				throw new FormError('Use the questionnaire controls.');
 			}
 
@@ -204,7 +208,7 @@ export async function routeFormInteraction(interaction: FormInteraction) {
 					throw new FormError('Browse your submissions in DMs.');
 				}
 
-				await interaction.deferReply();
+				await interaction.deferUpdate();
 				await interaction.editReply(
 					await runtime.browsing.applicantSubmissions(interaction.user.id)
 				);
@@ -220,7 +224,22 @@ export async function routeFormInteraction(interaction: FormInteraction) {
 		const content = explainFormError(error);
 
 		if (interaction.deferred || interaction.replied) {
-			await interaction.editReply(panel(content));
+			const segments = interaction.customId.split(':');
+			const isOwnedEditor =
+				interaction.inGuild() &&
+				['m', 'type', 'question', 'config', 'qsave', 'access'].includes(segments[1]!) &&
+				segments[3] === interaction.user.id;
+			const controls = isOwnedEditor
+				? [
+						buttons(
+							button(
+								`zf:m:${segments[2]}:${interaction.user.id}:back`,
+								'Back to form'
+							)
+						)
+					]
+				: [];
+			await interaction.editReply(panel(content, controls));
 		} else {
 			await interaction.reply({
 				content,

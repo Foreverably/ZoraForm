@@ -189,7 +189,7 @@ export class ApplicantFlow {
 		}
 
 		const segments = interaction.customId.split(':');
-		await interaction.deferReply();
+		await interaction.deferUpdate();
 
 		if (segments[1] === 'directory') {
 			if (segments[2] === 'select' && interaction.isStringSelectMenu()) {
@@ -206,7 +206,7 @@ export class ApplicantFlow {
 					await this.memberRoles(form.guildId, interaction.user.id)
 				);
 				await interaction.editReply(
-					'Your questionnaire is starting. The first question will arrive in a DM.'
+					panel('Your questionnaire is starting. The first question will arrive in a DM.')
 				);
 				return;
 			}
@@ -307,7 +307,7 @@ export class ApplicantFlow {
 				interaction.id,
 				question.options[choiceIndex]!
 			);
-			await interaction.editReply('Answer saved. The next step will arrive shortly.');
+			await interaction.editReply(panel('Answer saved. The next step will arrive shortly.'));
 			return;
 		}
 
@@ -319,7 +319,7 @@ export class ApplicantFlow {
 				roles,
 				Number(segments[5])
 			);
-			await interaction.editReply('Opening that question for editing.');
+			await interaction.editReply(panel('Opening that question for editing.'));
 			return;
 		}
 
@@ -346,8 +346,8 @@ export class ApplicantFlow {
 			navigation === 'cancel'
 				? await this.directory(interaction.user.id)
 				: navigation === 'pause'
-					? 'Questionnaire paused. DM the bot when you are ready to resume.'
-					: 'Your saved question will arrive shortly.'
+					? panel('Questionnaire paused. DM the bot when you are ready to resume.')
+					: panel('Your saved question will arrive shortly.')
 		);
 	}
 }
