@@ -1,5 +1,11 @@
 import type * as validation from 'zod';
-import type { formQuestionSchema, formConfigurationSchema } from './schemas';
+import type {
+	formQuestionSchema,
+	formConfigurationSchema,
+	questionReferenceSchema
+} from './schemas';
+
+export type QuestionReference = validation.infer<typeof questionReferenceSchema>;
 
 export type FormQuestion = validation.infer<typeof formQuestionSchema>;
 

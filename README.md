@@ -43,9 +43,15 @@ Exactly one user or role must be selected. Grants are server-specific and checke
 
 ## Create forms
 
-Run `/form create` with a name and submission channel, then use the interactive builder to add, edit, remove, reorder, and preview questions. Text, numbers, single-choice answers, and attachments are supported. Questions can be optional. Attachment questions collect applicant uploads; adding staff reference images or files to question prompts is not yet supported.
+Run `/form create` with a name and submission channel, then use the interactive builder to add, edit, remove, reorder, and preview questions. Text, numbers, single-choice answers, and attachments are supported. Choosing a question opens its editor, where each setting changes on its own: wording, required or optional, answer limits, whole numbers only, and answer choices.
 
 The builder updates one message as you navigate, save a modal, or return with Back. Modals use Discord Label components. Staff review provides a native text-channel picker.
+
+### Reference files
+
+Staff can show 1–3 screenshots or documents with a question, up to 8 MiB each and 20 MiB per question. The bot keeps them in a message in the form's submission channel and stores only that message's identifiers, so anyone who can read the channel can see them. Do not delete that message while forms or saved questionnaires use it. Replacing or removing files leaves the old message in place, because questionnaires already in progress stay on the revision they started with; delete it manually once those have finished.
+
+Publishing fails if a reference file is no longer available. If one disappears after publishing, applicants still receive the question, with a notice in place of the missing file. Temporary download failures retry instead of sending the question without its files.
 
 Use Access for allowed roles, required roles, blacklisted roles, and blocked users. Searchable role and user menus add or remove up to 25 entries per selection without replacing the rest of a list (up to 100 entries per list). Denials take precedence: any blacklisted role blocks access, all required roles must be present, and at least one allowed role must be present when an allow-list is configured. An empty allow-list imposes no role restriction.
 

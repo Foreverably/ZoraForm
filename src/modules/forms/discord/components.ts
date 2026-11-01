@@ -43,6 +43,7 @@ export function panel(text: string, rows: Row[] = []) {
 	return {
 		components: [container],
 		flags: MessageFlags.IsComponentsV2 as const,
+		attachments: [],
 		allowedMentions: { parse: [] }
 	};
 }

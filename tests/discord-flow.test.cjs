@@ -684,40 +684,269 @@ function componentTree(payload) {
 	return payload.components.map((component) => component.toJSON());
 }
 
-test('question editing and modal saves update one management message with Back navigation', async () => {
+function controlId(payload, label) {
+	return componentTree(payload)[0]
+		.components.filter((component) => component.type === 1)
+		.flatMap((row) => row.components)
+		.find((control) => control.label === label).custom_id;
+}
+
+async function openQuestion(editor, formId, questionIndex) {
+	const { revision } = (await formService.findForm(formId)).data;
+	await editor.builder.handleInteraction(
+		editor.interaction(`zf:question:${formId}:${reviewerId}:edit:${revision}`, 'string', [
+			String(questionIndex)
+		])
+	);
+}
+
+async function pressControl(editor, label) {
+	await editor.builder.handleInteraction(
+		editor.interaction(controlId(editor.message.payload, label))
+	);
+}
+
+async function submitLatestModal(editor, values) {
+	await editor.builder.handleInteraction(
+		editor.interaction(editor.modals.at(-1).custom_id, 'modal', [], {
+			getTextInputValue: (field) => values[field]
+		})
+	);
+}
+
+test('question editor changes one setting at a time on one management message', async () => {
 	const flow = await setupFlow();
 	const editor = managementEditor(flow);
 	const prefix = `zf:m:${flow.form.id}:${reviewerId}`;
+	const savedQuestion = async (index = 0) =>
+		(await formService.findForm(flow.form.id)).data.questions[index];
 	await editor.builder.handleInteraction(editor.interaction(`${prefix}:edit`));
 	assert.match(JSON.stringify(componentTree(editor.message.payload)), /Back to form/);
-	await editor.builder.handleInteraction(
-		editor.interaction(
-			`zf:question:${flow.form.id}:${reviewerId}:edit:${flow.form.data.revision}`,
-			'string',
-			['0']
-		)
-	);
+	await openQuestion(editor, flow.form.id, 0);
+	assert.equal(editor.modals.length, 0);
+	assert.match(JSON.stringify(componentTree(editor.message.payload)), /Edit wording/);
+
+	const staleControl = controlId(editor.message.payload, 'Make optional');
+	await pressControl(editor, 'Edit wording');
 	const modal = editor.modals.at(-1);
+	assert.equal(modal.components.length, 1);
 	assert.ok(modal.components.every((component) => component.type === 18));
 	assert.ok(modal.components.every((component) => component.component.type === 4));
 	assert.ok(modal.components.every((component) => !('label' in component.component)));
-	const answers = { prompt: 'Updated question?', required: 'yes', minimum: '3', maximum: '500' };
-	await editor.builder.handleInteraction(
-		editor.interaction(modal.custom_id, 'modal', [], {
-			getTextInputValue: (field) => answers[field]
-		})
-	);
-	assert.equal(
-		(await formService.findForm(flow.form.id)).data.questions[0].prompt,
-		answers.prompt
-	);
+	await submitLatestModal(editor, { prompt: 'Updated question?' });
+	assert.equal((await savedQuestion()).prompt, 'Updated question?');
 	assert.match(JSON.stringify(componentTree(editor.message.payload)), /Updated question/);
+	await assert.rejects(
+		editor.builder.handleInteraction(editor.interaction(staleControl)),
+		/changed/
+	);
+
+	await pressControl(editor, 'Make optional');
+	assert.equal((await savedQuestion()).required, false);
+	await pressControl(editor, 'Answer limits');
+	assert.equal(editor.modals.at(-1).components.length, 2);
+	await submitLatestModal(editor, { minimum: '3', maximum: '500' });
+	assert.equal((await savedQuestion()).max, 500);
+	await pressControl(editor, 'Answer limits');
+	await assert.rejects(submitLatestModal(editor, { minimum: '9', maximum: '2' }));
+	assert.equal((await savedQuestion()).max, 500);
+
 	await editor.builder.handleInteraction(editor.interaction(`${prefix}:add`));
 	assert.match(JSON.stringify(componentTree(editor.message.payload)), /Back to form/);
+	const { revision } = (await formService.findForm(flow.form.id)).data;
+	await editor.builder.handleInteraction(
+		editor.interaction(`zf:type:${flow.form.id}:${reviewerId}:${revision}`, 'string', [
+			'number'
+		])
+	);
+	assert.equal(editor.modals.at(-1).components.length, 1);
+	await submitLatestModal(editor, { prompt: 'How many hours?' });
+	assert.match(JSON.stringify(componentTree(editor.message.payload)), /Question 2/);
+	await pressControl(editor, 'Whole numbers only');
+	assert.equal((await savedQuestion(1)).integer, true);
+
 	await editor.builder.handleInteraction(editor.interaction(`${prefix}:back`));
 	assert.match(JSON.stringify(componentTree(editor.message.payload)), /Add question/);
 	assert.equal(editor.message.id, 'one-management-message');
-	assert.equal(editor.updateCount(), 4);
+});
+
+function storeReferenceFiles(flow) {
+	const channel = flow.discord.channels.get(reviewChannelId);
+	const messages = new Collection();
+	channel.send = async (payload) => {
+		const attachments = new Collection(
+			payload.files.map((file) => {
+				const attachmentId = flow.discord.id();
+				return [
+					attachmentId,
+					{
+						id: attachmentId,
+						name: file.name,
+						size: file.attachment.length,
+						contentType: file.name.endsWith('.png') ? 'image/png' : 'application/pdf',
+						url: `https://cdn.discordapp.com/attachments/${attachmentId}/${file.name}`
+					}
+				];
+			})
+		);
+		const message = { id: flow.discord.id(), author: { id: 'bot' }, attachments };
+		messages.set(message.id, message);
+		return message;
+	};
+	channel.messages = {
+		fetch: async ({ message }) => {
+			if (!messages.has(message)) {
+				throw Object.assign(new Error('Unknown Message'), { code: 10008 });
+			}
+			return messages.get(message);
+		},
+		delete: async (messageId) => messages.delete(messageId)
+	};
+	return { channel, messages };
+}
+
+const referenceUploads = new Collection([
+	[
+		'1',
+		{ name: 'Guide Map.png', size: 4, url: 'https://cdn.discordapp.com/attachments/1/map.png' }
+	],
+	['2', { name: 'rules.pdf', size: 4, url: 'https://cdn.discordapp.com/attachments/2/rules.pdf' }]
+]);
+
+function serveDiscordFiles(t, status = 200) {
+	t.mock.method(globalThis, 'fetch', async () => new Response(new Uint8Array(4), { status }));
+}
+
+async function uploadReferenceFiles(editor, formId) {
+	await openQuestion(editor, formId, 0);
+	await pressControl(editor, 'Reference files');
+	const modal = editor.modals.at(-1);
+	assert.equal(modal.components[0].component.type, 19);
+	await editor.builder.handleInteraction(
+		editor.interaction(modal.custom_id, 'modal', [], {
+			getUploadedFiles: () => referenceUploads
+		})
+	);
+}
+
+async function startAndDeliverQuestion(flow) {
+	await formService.startSession(flow.form.id, flow.userId, [guildId]);
+	await flow.delivery.tick();
+	const channel = await (await flow.discord.client.users.fetch(flow.userId)).createDM();
+	return {
+		session: await formService.findActiveSession(flow.userId),
+		delivered: [...(await channel.messages.fetch()).values()]
+	};
+}
+
+test('reference files keep their names and reach the preview and the applicant prompt', async (t) => {
+	serveDiscordFiles(t);
+	const flow = await setupFlow();
+	const editor = managementEditor(flow);
+	const prefix = `zf:m:${flow.form.id}:${reviewerId}`;
+	const { messages } = storeReferenceFiles(flow);
+	await uploadReferenceFiles(editor, flow.form.id);
+	const saved = await formService.findForm(flow.form.id);
+	assert.deepEqual(
+		saved.data.questions[0].references.map(({ name, image }) => ({ name, image })),
+		[
+			{ name: 'Guide Map.png', image: true },
+			{ name: 'rules.pdf', image: false }
+		]
+	);
+	assert.equal(messages.size, 1);
+	assert.match(JSON.stringify(componentTree(editor.message.payload)), /Guide Map/);
+
+	await editor.builder.handleInteraction(editor.interaction(`${prefix}:preview`));
+	assert.equal(editor.message.payload.files.length, 2);
+	await editor.builder.handleInteraction(editor.interaction(`${prefix}:back`));
+	assert.equal(editor.message.payload.files, undefined);
+	assert.deepEqual(editor.message.payload.attachments, []);
+
+	await editor.builder.handleInteraction(editor.interaction(`${prefix}:publish`));
+	const { session, delivered } = await startAndDeliverQuestion(flow);
+	assert.equal(session.status, 'answer');
+	assert.deepEqual(
+		delivered[0].payload.files.map((file) => file.name),
+		['reference-1.png', 'reference-2.pdf']
+	);
+	const contents = delivered[0].components[0].components;
+	assert.equal(
+		contents.find((component) => component.type === 12).items[0].media.url,
+		'attachment://reference-1.png'
+	);
+	assert.equal(
+		contents.find((component) => component.type === 13).file.url,
+		'attachment://reference-2.pdf'
+	);
+
+	await openQuestion(editor, flow.form.id, 0);
+	await pressControl(editor, 'Remove files');
+	assert.deepEqual((await formService.findForm(flow.form.id)).data.questions[0].references, []);
+	assert.equal(messages.size, 1);
+});
+
+test('a removed reference file blocks publishing but never strands an applicant', async (t) => {
+	serveDiscordFiles(t);
+	const flow = await setupFlow();
+	const editor = managementEditor(flow);
+	const { messages } = storeReferenceFiles(flow);
+	await uploadReferenceFiles(editor, flow.form.id);
+	const prefix = `zf:m:${flow.form.id}:${reviewerId}`;
+	await editor.builder.handleInteraction(editor.interaction(`${prefix}:publish`));
+	const publishedRevision = (await formService.findForm(flow.form.id)).published.revision;
+	messages.clear();
+
+	const { session, delivered } = await startAndDeliverQuestion(flow);
+	assert.equal(session.status, 'answer');
+	assert.deepEqual(delivered[0].payload.files, []);
+	assert.match(JSON.stringify(delivered[0].components), /no longer available/);
+
+	await assert.rejects(
+		editor.builder.handleInteraction(editor.interaction(`${prefix}:publish`)),
+		/question 1 is no longer available/
+	);
+	assert.equal((await formService.findForm(flow.form.id)).published.revision, publishedRevision);
+});
+
+test('a temporary download failure retries the prompt instead of dropping its files', async (t) => {
+	serveDiscordFiles(t);
+	const flow = await setupFlow();
+	const editor = managementEditor(flow);
+	storeReferenceFiles(flow);
+	await uploadReferenceFiles(editor, flow.form.id);
+	await editor.builder.handleInteraction(
+		editor.interaction(`zf:m:${flow.form.id}:${reviewerId}:publish`)
+	);
+	t.mock.restoreAll();
+	serveDiscordFiles(t, 503);
+	t.mock.method(console, 'error', () => undefined);
+
+	const { session, delivered } = await startAndDeliverQuestion(flow);
+	assert.equal(session.status, 'prompt');
+	assert.equal(delivered.length, 0);
+});
+
+test('reference uploads explain missing channel permissions and invalid file limits', async (t) => {
+	serveDiscordFiles(t);
+	const flow = await setupFlow();
+	const editor = managementEditor(flow);
+	const { channel, messages } = storeReferenceFiles(flow);
+	const { QuestionMedia } = require('../dist/modules/forms/services/question-media');
+	const media = new QuestionMedia(flow.discord.client);
+	await assert.rejects(
+		media.capture(guildId, reviewChannelId, [
+			{
+				name: 'large.png',
+				size: 9 * 1024 * 1024,
+				url: 'https://cdn.discordapp.com/a/large.png'
+			}
+		]),
+		/up to 8 MiB/
+	);
+	channel.permissionsFor = () => ({ has: () => false });
+	await assert.rejects(uploadReferenceFiles(editor, flow.form.id), /permissions/);
+	assert.equal(messages.size, 0);
 });
 
 test('native role and user pickers edit batches without losing existing access entries', async () => {

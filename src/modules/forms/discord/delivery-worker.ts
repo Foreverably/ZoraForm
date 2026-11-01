@@ -1,3 +1,4 @@
+import { QuestionMedia } from '../services/question-media';
 import { getBotName } from '../../../lib/environment';
 import { ChannelType, PermissionFlagsBits, type Client, type TextChannel } from 'discord.js';
 import { and, eq, lte, inArray, ne } from 'drizzle-orm';
@@ -24,7 +25,8 @@ export class DiscordDelivery {
 	public constructor(
 		private readonly client: Client,
 		private readonly formService: FormService,
-		private readonly attachments: AttachmentTransfer
+		private readonly attachments: AttachmentTransfer,
+		public readonly questionMedia = new QuestionMedia(client)
 	) {}
 
 	public start() {
@@ -166,7 +168,12 @@ export class DiscordDelivery {
 				);
 			}
 
-			questionMessage = await directMessages.send(content);
+			questionMessage = await directMessages.send(
+				await this.questionMedia.decorate(
+					content,
+					session.snapshot.questions[session.position]
+				)
+			);
 		}
 
 		await this.formService.database

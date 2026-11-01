@@ -74,7 +74,9 @@ async function browse(interaction: ButtonInteraction | AnySelectMenuInteraction)
 			);
 		}
 
-		await interaction.editReply(runtime.browsing.preview(form, ownerId, Number(segments[6])));
+		await interaction.editReply(
+			await runtime.browsing.preview(form, ownerId, Number(segments[6]))
+		);
 		return;
 	}
 
@@ -227,7 +229,9 @@ export async function routeFormInteraction(interaction: FormInteraction) {
 			const segments = interaction.customId.split(':');
 			const isOwnedEditor =
 				interaction.inGuild() &&
-				['m', 'type', 'question', 'config', 'qsave', 'access'].includes(segments[1]!) &&
+				['m', 'type', 'question', 'config', 'qsave', 'access', 'qe'].includes(
+					segments[1]!
+				) &&
 				segments[3] === interaction.user.id;
 			const controls = isOwnedEditor
 				? [

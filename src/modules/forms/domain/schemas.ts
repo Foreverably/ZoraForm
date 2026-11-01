@@ -1,10 +1,24 @@
 import * as validation from 'zod';
 
 export const discordSnowflakeSchema = validation.string().regex(/^\d{17,20}$/);
+export const questionReferenceSchema = validation.object({
+	channelId: discordSnowflakeSchema,
+	messageId: discordSnowflakeSchema,
+	attachmentId: discordSnowflakeSchema,
+	name: validation.string().min(1).max(100),
+	size: validation
+		.number()
+		.int()
+		.min(1)
+		.max(8 * 1024 * 1024),
+	image: validation.boolean()
+});
+
 const sharedQuestionFields = {
 	id: validation.uuid(),
 	prompt: validation.string().trim().min(1).max(300),
-	required: validation.boolean().default(true)
+	required: validation.boolean().default(true),
+	references: validation.array(questionReferenceSchema).max(3).default([])
 };
 
 export const formQuestionSchema = validation

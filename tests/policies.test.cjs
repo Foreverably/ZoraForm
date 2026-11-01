@@ -243,7 +243,7 @@ test('preview pagination exposes all questions and long choice lists without exc
 	let sawFinalQuestion = false;
 	let page = 0;
 	while (page < 100) {
-		const message = browser.preview(form, actorId, page);
+		const message = await browser.preview(form, actorId, page);
 		const serialized = text(message);
 		if (serialized.includes('Question 25')) sawFinalQuestion = true;
 		const content = message.components[0]

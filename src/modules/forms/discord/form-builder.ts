@@ -1,3 +1,4 @@
+import { QuestionEditor, questionEditorPanel } from './question-editor';
 import { StaffPermissions } from '../services/staff-permissions';
 import { FormBrowsing } from './browsing';
 import type { StaffCapability } from '../domain/permissions';
@@ -19,7 +20,7 @@ import { FormService } from '../services/form-service';
 import { DiscordDelivery } from './delivery-worker';
 import { formQuestionSchema, discordSnowflakeSchema } from '../domain/schemas';
 import { FormError } from '../domain/rules';
-import type { FormConfiguration, FormQuestion } from '../domain/types';
+import type { FormConfiguration } from '../domain/types';
 import { accessPanel, updateAccessList } from './access-panel';
 import { managePanel, panel, buttons, button } from './components';
 
@@ -43,7 +44,9 @@ function modal(customId: string, title: string, fields: ModalField[]) {
 						.setCustomId(field.id)
 						.setStyle(field.multiline ? TextInputStyle.Paragraph : TextInputStyle.Short)
 						.setRequired(field.required !== false)
-						.setMaxLength(field.id === 'choices' ? 2500 : 1000)
+						.setMaxLength(
+							field.id === 'choices' ? 2524 : field.id === 'prompt' ? 300 : 1000
+						)
 						.setValue(field.value ?? '')
 				)
 			)
@@ -51,12 +54,16 @@ function modal(customId: string, title: string, fields: ModalField[]) {
 }
 
 export class FormBuilder {
+	private readonly questionEditor: QuestionEditor;
+
 	public constructor(
 		private readonly formService: FormService,
 		private readonly delivery: DiscordDelivery,
 		private readonly permissions: StaffPermissions,
 		private readonly browsing: FormBrowsing
-	) {}
+	) {
+		this.questionEditor = new QuestionEditor(formService, delivery.questionMedia);
+	}
 
 	public async handleInteraction(interaction: BuilderInteraction) {
 		const guild = interaction.guild;
@@ -90,15 +97,27 @@ export class FormBuilder {
 			throw new FormError('This form belongs to another server.');
 		}
 
+		if (segments[1] === 'qe') {
+			await this.questionEditor.handle(interaction, form, segments);
+			return;
+		}
+
 		if (interaction.isModalSubmit()) {
 			if (!interaction.isFromMessage()) {
 				throw new FormError('Open this editor from the form panel.');
 			}
 
 			await interaction.deferUpdate();
-			await this.saveModal(interaction, segments, form.data);
+			await this.saveModal(interaction, segments);
+			const updatedForm = await this.formService.findForm(formId);
 			await interaction.editReply(
-				managePanel(await this.formService.findForm(formId), interaction.user.id)
+				segments[1] === 'qsave'
+					? questionEditorPanel(
+							updatedForm,
+							interaction.user.id,
+							updatedForm.data.questions.length - 1
+						)
+					: managePanel(updatedForm, interaction.user.id)
 			);
 			return;
 		}
@@ -146,21 +165,15 @@ export class FormBuilder {
 				throw new FormError('The question list changed. Reopen /form manage.');
 			}
 
+			await interaction.deferUpdate();
+
 			if (segments[4] === 'edit') {
-				await interaction.showModal(
-					this.questionModal(
-						formId,
-						interaction.user.id,
-						revision,
-						question.type,
-						question,
-						questionIndex
-					)
+				await interaction.editReply(
+					questionEditorPanel(form, interaction.user.id, questionIndex)
 				);
 				return;
 			}
 
-			await interaction.deferUpdate();
 			await this.formService.editFormDraft(
 				formId,
 				guild.id,
@@ -321,6 +334,7 @@ export class FormBuilder {
 
 		if (action === 'publish') {
 			await this.delivery.validateReviewChannel(guild.id, form.data);
+			await this.delivery.questionMedia.assertAvailable(form.data.questions);
 			await guild.roles.fetch();
 
 			for (const roleId of [
@@ -344,7 +358,7 @@ export class FormBuilder {
 		} else if (action === 'archive') {
 			await this.formService.archiveForm(formId, guild.id, interaction.user.id);
 		} else if (action === 'preview') {
-			await interaction.editReply(this.browsing.preview(form, interaction.user.id));
+			await interaction.editReply(await this.browsing.preview(form, interaction.user.id));
 			return;
 		}
 
@@ -361,108 +375,39 @@ export class FormBuilder {
 		}
 	}
 
-	private questionModal(
-		formId: string,
-		actorId: string,
-		revision: number,
-		questionType: string,
-		question?: FormQuestion,
-		questionIndex?: number
-	) {
+	private questionModal(formId: string, actorId: string, revision: number, questionType: string) {
 		if (!['text', 'number', 'choice', 'attachment'].includes(questionType)) {
 			throw new FormError('Choose a supported question type.');
 		}
 
-		const fields: ModalField[] = [
-			{ id: 'prompt', label: 'Question', value: question?.prompt ?? '', multiline: true },
-			{
-				id: 'required',
-				label: 'Is an answer required? (yes/no)',
-				value: question?.required === false ? 'no' : 'yes'
-			}
-		];
+		const fields: ModalField[] = [{ id: 'prompt', label: 'Question wording', multiline: true }];
 
 		if (questionType === 'choice') {
 			fields.push({
 				id: 'choices',
 				label: 'Answer choices (one per line, 2–25 choices)',
-				value: question?.type === 'choice' ? question.options.join('\n') : '',
 				multiline: true
 			});
 		}
 
-		if (questionType === 'text' || questionType === 'number') {
-			fields.push(
-				{
-					id: 'minimum',
-					label: questionType === 'text' ? 'Minimum characters' : 'Minimum value',
-					value: String(
-						question && (question.type === 'text' || question.type === 'number')
-							? question.min
-							: questionType === 'text'
-								? 1
-								: 0
-					)
-				},
-				{
-					id: 'maximum',
-					label:
-						questionType === 'text'
-							? 'Maximum characters (up to 2,000)'
-							: 'Maximum value',
-					value: String(
-						question && (question.type === 'text' || question.type === 'number')
-							? question.max
-							: questionType === 'text'
-								? 2000
-								: 1000000
-					)
-				}
-			);
-		}
-
-		if (questionType === 'number') {
-			fields.push({
-				id: 'integer',
-				label: 'Whole numbers only? (yes/no)',
-				value: question?.type === 'number' && question.integer ? 'yes' : 'no'
-			});
-		}
-
-		const operation = questionIndex === undefined ? 'add' : String(questionIndex);
 		return modal(
-			`zf:qsave:${formId}:${actorId}:${revision}:${questionType}:${operation}`,
-			question ? 'Edit question' : 'Add question',
+			`zf:qsave:${formId}:${actorId}:${revision}:${questionType}`,
+			'Add question',
 			fields
 		);
 	}
 
-	private async saveModal(
-		interaction: ModalSubmitInteraction,
-		segments: string[],
-		currentConfiguration: FormConfiguration
-	) {
+	private async saveModal(interaction: ModalSubmitInteraction, segments: string[]) {
 		const formId = segments[2]!;
 		const value = (fieldId: string) => interaction.fields.getTextInputValue(fieldId).trim();
 
 		if (segments[1] === 'qsave') {
 			const revision = Number(segments[4]);
 			const questionType = segments[5]!;
-			const questionIndex = segments[6] === 'add' ? undefined : Number(segments[6]);
-			const required = value('required').toLowerCase();
-
-			if (required !== 'yes' && required !== 'no') {
-				throw new FormError('Required must be yes or no.');
-			}
-
 			const question = formQuestionSchema.parse({
-				id:
-					questionIndex === undefined
-						? randomUUID()
-						: currentConfiguration.questions[questionIndex]?.id,
+				id: randomUUID(),
 				type: questionType,
 				prompt: value('prompt'),
-				required: required === 'yes',
 				...(questionType === 'choice'
 					? {
 							options: value('choices')
@@ -470,12 +415,6 @@ export class FormBuilder {
 								.map((choice) => choice.trim())
 								.filter(Boolean)
 						}
-					: {}),
-				...(questionType === 'text' || questionType === 'number'
-					? { min: Number(value('minimum')), max: Number(value('maximum')) }
-					: {}),
-				...(questionType === 'number'
-					? { integer: value('integer').toLowerCase() === 'yes' }
 					: {})
 			});
 
@@ -485,15 +424,7 @@ export class FormBuilder {
 				interaction.user.id,
 				(configuration) => {
 					this.assertRevision(configuration, revision);
-					const questions = [...configuration.questions];
-
-					if (questionIndex === undefined) {
-						questions.push(question);
-					} else {
-						questions[questionIndex] = question;
-					}
-
-					return { ...configuration, questions };
+					return { ...configuration, questions: [...configuration.questions, question] };
 				}
 			);
 			return;

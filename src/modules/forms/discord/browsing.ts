@@ -1,3 +1,4 @@
+import { QuestionMedia } from '../services/question-media';
 import { and, eq, count, desc } from 'drizzle-orm';
 import {
 	ActionRowBuilder,
@@ -40,7 +41,8 @@ export class FormBrowsing {
 	public constructor(
 		private readonly formService: FormService,
 		private readonly permissions: StaffPermissions,
-		private readonly client: Client
+		private readonly client: Client,
+		private readonly questionMedia = new QuestionMedia(client)
 	) {}
 
 	public async assertManagement(guild: Guild, actorId: string) {
@@ -168,7 +170,7 @@ export class FormBrowsing {
 		);
 	}
 
-	public preview(form: FormRecord, actorId: string, requestedPage = 0) {
+	public async preview(form: FormRecord, actorId: string, requestedPage = 0) {
 		const previewPages = form.data.questions.flatMap((question, index) => {
 			let details = `-# Question ${index + 1} of ${form.data.questions.length} · ${question.required ? 'Required' : 'Optional'} · ${question.type}\n\n### ${safe(question.prompt)}`;
 
@@ -181,11 +183,14 @@ export class FormBrowsing {
 			if (question.type === 'attachment')
 				details += '\nAttach 1–3 files, up to 8 MiB each and 20 MiB for the questionnaire.';
 
-			return details.match(/[\s\S]{1,2200}/g) ?? [details];
+			return (details.match(/[\s\S]{1,2200}/g) ?? [details]).map((text) => ({
+				text,
+				question
+			}));
 		});
 		const { page, pages } = pagination(requestedPage, previewPages.length, 1);
-		return panel(
-			`## Preview: ${safe(form.data.name)}\n${safe(form.data.description)}\n\n${previewPages[page] ?? 'No questions yet.'}${pages > 1 ? `\n\n-# Page ${page + 1} of ${pages}` : ''}`,
+		const content = panel(
+			`## Preview: ${safe(form.data.name)}\n${safe(form.data.description)}\n\n${previewPages[page]?.text ?? 'No questions yet.'}${pages > 1 ? `\n\n-# Page ${page + 1} of ${pages}` : ''}`,
 			[
 				...navigation(
 					`zf:b:preview:${form.id}:${actorId}:${form.data.revision}`,
@@ -195,5 +200,6 @@ export class FormBrowsing {
 				buttons(button(`zf:m:${form.id}:${actorId}:back`, 'Back to form'))
 			]
 		);
+		return this.questionMedia.decorate(content, previewPages[page]?.question);
 	}
 }
