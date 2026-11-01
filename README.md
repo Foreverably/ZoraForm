@@ -43,9 +43,11 @@ Exactly one user or role must be selected. Grants are server-specific and checke
 
 ## Create forms
 
-Run `/form create` with a name and submission channel, then use the interactive builder to add, edit, remove, reorder, and preview questions. Text, numbers, single-choice answers, and attachments are supported. Questions can be optional.
+Run `/form create` with a name and submission channel, then use the interactive builder to add, edit, remove, reorder, and preview questions. Text, numbers, single-choice answers, and attachments are supported. Questions can be optional. Attachment questions collect applicant uploads; adding staff reference images or files to question prompts is not yet supported.
 
-Use Access for allowed roles, required roles, blacklisted roles, and blocked users. Denials take precedence: any blacklisted role blocks access, all required roles must be present, and at least one allowed role must be present when an allow-list is configured. An empty allow-list imposes no role restriction.
+The builder updates one message as you navigate, save a modal, or return with Back. Modals use Discord Label components. Staff review provides a native text-channel picker.
+
+Use Access for allowed roles, required roles, blacklisted roles, and blocked users. Searchable role and user menus add or remove up to 25 entries per selection without replacing the rest of a list (up to 100 entries per list). Denials take precedence: any blacklisted role blocks access, all required roles must be present, and at least one allowed role must be present when an allow-list is configured. An empty allow-list imposes no role restriction.
 
 Use `/form blacklist` to apply immediate user or role restrictions. Omit `form` for server-wide restrictions, or supply a form ID for a restriction on that form alone:
 

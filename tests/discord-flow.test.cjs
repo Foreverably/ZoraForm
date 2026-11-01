@@ -545,7 +545,7 @@ test('text, choice, number and attachment answers survive the complete questionn
 		values: ['1'],
 		inGuild: () => false,
 		isStringSelectMenu: () => true,
-		deferReply: async () => undefined,
+		deferUpdate: async () => undefined,
 		editReply: async () => undefined
 	});
 	await flow.delivery.tick();
@@ -642,4 +642,198 @@ test('a staff reply is delivered separately from deciding the submission', async
 		/Your application has reached the team/
 	);
 	assert.equal((await formService.findSubmission(submission.id)).status, 'pending');
+});
+
+function managementEditor(flow) {
+	const { StaffPermissions } = require('../dist/modules/forms/services/staff-permissions');
+	const { FormBrowsing } = require('../dist/modules/forms/discord/browsing');
+	const permissions = new StaffPermissions(database);
+	const browsing = new FormBrowsing(formService, permissions, flow.discord.client);
+	const builder = new FormBuilder(formService, flow.delivery, permissions, browsing);
+	const message = { id: 'one-management-message', payload: null };
+	const modals = [];
+	let updates = 0;
+	const interaction = (customId, kind = 'button', values = [], fields) => ({
+		customId,
+		guild: flow.discord.client.guilds.cache.get(guildId),
+		guildId,
+		user: { id: reviewerId },
+		message,
+		values,
+		fields,
+		isModalSubmit: () => kind === 'modal',
+		isFromMessage: () => true,
+		isStringSelectMenu: () => kind === 'string',
+		isUserSelectMenu: () => kind === 'user',
+		isRoleSelectMenu: () => kind === 'role',
+		isAnySelectMenu: () => ['string', 'user', 'role'].includes(kind),
+		deferUpdate: async () => {
+			updates++;
+		},
+		editReply: async (payload) => {
+			message.payload = payload;
+		},
+		showModal: async (modal) => {
+			modals.push(modal.toJSON());
+		}
+	});
+	return { builder, interaction, message, modals, updateCount: () => updates };
+}
+
+function componentTree(payload) {
+	return payload.components.map((component) => component.toJSON());
+}
+
+test('question editing and modal saves update one management message with Back navigation', async () => {
+	const flow = await setupFlow();
+	const editor = managementEditor(flow);
+	const prefix = `zf:m:${flow.form.id}:${reviewerId}`;
+	await editor.builder.handleInteraction(editor.interaction(`${prefix}:edit`));
+	assert.match(JSON.stringify(componentTree(editor.message.payload)), /Back to form/);
+	await editor.builder.handleInteraction(
+		editor.interaction(
+			`zf:question:${flow.form.id}:${reviewerId}:edit:${flow.form.data.revision}`,
+			'string',
+			['0']
+		)
+	);
+	const modal = editor.modals.at(-1);
+	assert.ok(modal.components.every((component) => component.type === 18));
+	assert.ok(modal.components.every((component) => component.component.type === 4));
+	assert.ok(modal.components.every((component) => !('label' in component.component)));
+	const answers = { prompt: 'Updated question?', required: 'yes', minimum: '3', maximum: '500' };
+	await editor.builder.handleInteraction(
+		editor.interaction(modal.custom_id, 'modal', [], {
+			getTextInputValue: (field) => answers[field]
+		})
+	);
+	assert.equal(
+		(await formService.findForm(flow.form.id)).data.questions[0].prompt,
+		answers.prompt
+	);
+	assert.match(JSON.stringify(componentTree(editor.message.payload)), /Updated question/);
+	await editor.builder.handleInteraction(editor.interaction(`${prefix}:add`));
+	assert.match(JSON.stringify(componentTree(editor.message.payload)), /Back to form/);
+	await editor.builder.handleInteraction(editor.interaction(`${prefix}:back`));
+	assert.match(JSON.stringify(componentTree(editor.message.payload)), /Add question/);
+	assert.equal(editor.message.id, 'one-management-message');
+	assert.equal(editor.updateCount(), 4);
+});
+
+test('native role and user pickers edit batches without losing existing access entries', async () => {
+	const flow = await setupFlow();
+	const editor = managementEditor(flow);
+	const initialRoles = Array.from({ length: 30 }, (_, index) =>
+		String(12345678901234000n + BigInt(index))
+	);
+	await formService.editFormDraft(flow.form.id, guildId, reviewerId, (configuration) => ({
+		...configuration,
+		allowRoles: initialRoles
+	}));
+	const form = await formService.findForm(flow.form.id);
+	const accessPrefix = `zf:access:${form.id}:${reviewerId}`;
+	await editor.builder.handleInteraction(editor.interaction(`${accessPrefix}:allowRoles:open`));
+	let payload = componentTree(editor.message.payload);
+	assert.equal(
+		payload[0].components.filter(
+			(component) => component.type === 1 && component.components[0].type === 6
+		).length,
+		2
+	);
+	const roleId = '12345678901234999';
+	await editor.builder.handleInteraction(
+		editor.interaction(`${accessPrefix}:allowRoles:add:${form.data.revision}`, 'role', [roleId])
+	);
+	let saved = await formService.findForm(form.id);
+	assert.deepEqual(saved.data.allowRoles, [...initialRoles, roleId]);
+	await assert.rejects(
+		editor.builder.handleInteraction(
+			editor.interaction(`${accessPrefix}:allowRoles:remove:${form.data.revision}`, 'role', [
+				roleId
+			])
+		),
+		/changed/
+	);
+	await editor.builder.handleInteraction(
+		editor.interaction(`${accessPrefix}:allowRoles:remove:${saved.data.revision}`, 'role', [
+			roleId
+		])
+	);
+	saved = await formService.findForm(form.id);
+	assert.deepEqual(saved.data.allowRoles, initialRoles);
+	await editor.builder.handleInteraction(editor.interaction(`${accessPrefix}:blacklist:open`));
+	payload = componentTree(editor.message.payload);
+	assert.equal(
+		payload[0].components.filter(
+			(component) => component.type === 1 && component.components[0].type === 5
+		).length,
+		2
+	);
+	await editor.builder.handleInteraction(
+		editor.interaction(`${accessPrefix}:blacklist:add:${saved.data.revision}`, 'user', [
+			reviewerId
+		])
+	);
+	assert.deepEqual((await formService.findForm(form.id)).data.blacklist, [reviewerId]);
+	assert.deepEqual((await formService.findForm(form.id)).published.allowRoles, []);
+});
+
+test('staff review uses a native channel picker and saves into the same panel', async () => {
+	const flow = await setupFlow();
+	const editor = managementEditor(flow);
+	await editor.builder.handleInteraction(
+		editor.interaction(`zf:m:${flow.form.id}:${reviewerId}:review`)
+	);
+	const modal = editor.modals.at(-1);
+	assert.equal(modal.components[0].type, 18);
+	assert.equal(modal.components[0].component.type, 8);
+	assert.deepEqual(modal.components[0].component.channel_types, [ChannelType.GuildText]);
+	const channelId = '12345678901234998';
+	await editor.builder.handleInteraction(
+		editor.interaction(modal.custom_id, 'modal', [], {
+			getSelectedChannels: () => new Collection([[channelId, { id: channelId }]])
+		})
+	);
+	assert.equal((await formService.findForm(flow.form.id)).data.reviewChannelId, channelId);
+	assert.equal(editor.updateCount(), 1);
+});
+
+test('access controls reject other owners and revoked permissions before updating a panel', async () => {
+	const flow = await setupFlow();
+	const editor = managementEditor(flow);
+	await assert.rejects(
+		editor.builder.handleInteraction(
+			editor.interaction(`zf:access:${flow.form.id}:someone-else:blacklist:open`)
+		),
+		/own panel/
+	);
+	const interaction = editor.interaction(
+		`zf:access:${flow.form.id}:${reviewerId}:blacklist:open`
+	);
+	interaction.guild = {
+		...interaction.guild,
+		members: {
+			fetch: async () => ({
+				roles: { cache: new Collection() },
+				permissions: { has: () => false }
+			})
+		}
+	};
+	await assert.rejects(editor.builder.handleInteraction(interaction));
+	assert.equal(editor.updateCount(), 0);
+});
+
+test('panel separators stay within Discord component limits even for paragraph-heavy answers', () => {
+	const { panel } = require('../dist/modules/forms/discord/components');
+	const payload = componentTree(panel(Array.from({ length: 300 }, () => 'a').join('\n\n')));
+	const contents = payload[0].components;
+	assert.ok(contents.some((component) => component.type === 14 && component.divider));
+	assert.ok(contents.length < 40);
+	assert.equal(
+		contents
+			.filter((component) => component.type === 10)
+			.map((component) => component.content)
+			.join('\n\n'),
+		Array.from({ length: 300 }, () => 'a').join('\n\n')
+	);
 });
