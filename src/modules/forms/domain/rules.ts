@@ -1,4 +1,4 @@
-import type { FormRecord, FormQuestion, StoredAttachment, QuestionAnswer } from './types';
+import type { FormRecord, FormQuestion, AttachmentReference, QuestionAnswer } from './types';
 
 export class FormError extends Error {}
 
@@ -24,12 +24,12 @@ export function assertFormAccess(
 export function validateQuestionAnswer(
 	question: FormQuestion,
 	answerText: string,
-	attachments: StoredAttachment[] = []
+	attachments: AttachmentReference[] = []
 ): QuestionAnswer {
 	if (question.type === 'attachment') {
 		if (!attachments.length || attachments.length > 3) {
 			throw new FormError(
-				'Attach between one and three PNG, JPEG, PDF or text attachments (8 MiB each; 20 MiB total).'
+				'Attach between one and three attachments (8 MiB each; 20 MiB total).'
 			);
 		}
 		return attachments;

@@ -57,7 +57,6 @@ export const formConfigurationSchema = validation.object({
 	name: validation.string().trim().min(1).max(80),
 	description: validation.string().max(500).default(''),
 	reviewChannelId: discordSnowflakeSchema,
-	reviewerIds: validation.array(discordSnowflakeSchema).min(1).max(20),
 	allowRoles: validation.array(discordSnowflakeSchema).default([]),
 	denyRoles: validation.array(discordSnowflakeSchema).default([]),
 	requiredRoles: validation.array(discordSnowflakeSchema).default([]),

@@ -13,13 +13,13 @@ export interface FormRecord {
 	archived: boolean;
 }
 
-export interface StoredAttachment {
+export interface AttachmentReference {
 	key: string;
 	name: string;
 	size: number;
 }
 
-export type QuestionAnswer = string | number | StoredAttachment[] | null;
+export type QuestionAnswer = string | number | AttachmentReference[] | null;
 
 export interface QuestionnaireSession {
 	id: string;
@@ -53,7 +53,7 @@ export interface FormSubmission {
 
 export interface DeliveryJob {
 	id: string;
-	kind: 'prompt' | 'review' | 'receipt' | 'close';
+	kind: 'prompt' | 'review' | 'receipt' | 'close' | 'reply';
 	payload: {
 		id: string;
 		version?: number;

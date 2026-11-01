@@ -5,7 +5,7 @@ import { eq } from 'drizzle-orm';
 import { files } from '../../../database/schema';
 import type { Database } from '../../../database/database';
 import { FormError } from '../domain/rules';
-import type { StoredAttachment } from '../domain/types';
+import type { AttachmentReference } from '../domain/types';
 
 export class AttachmentTransfer {
 	public constructor(
@@ -13,7 +13,7 @@ export class AttachmentTransfer {
 		private readonly client: Client
 	) {}
 
-	public async capture(sessionId: string, message: Message): Promise<StoredAttachment[]> {
+	public async capture(sessionId: string, message: Message): Promise<AttachmentReference[]> {
 		const attachments = [...message.attachments.values()];
 
 		if (
@@ -26,7 +26,7 @@ export class AttachmentTransfer {
 		}
 
 		return this.database.transaction(async (database) => {
-			const captured: StoredAttachment[] = [];
+			const captured: AttachmentReference[] = [];
 
 			for (const [index, attachment] of attachments.entries()) {
 				const originalExtension = extname(attachment.name)
@@ -53,7 +53,7 @@ export class AttachmentTransfer {
 		});
 	}
 
-	private async originalAttachment(reference: StoredAttachment) {
+	private async originalAttachment(reference: AttachmentReference) {
 		const [source] = await this.database
 			.select()
 			.from(files)
@@ -102,11 +102,11 @@ export class AttachmentTransfer {
 		return { attachment, expectedSize: source.size };
 	}
 
-	public async assertAvailable(reference: StoredAttachment) {
+	public async assertAvailable(reference: AttachmentReference) {
 		await this.originalAttachment(reference);
 	}
 
-	public async buffer(reference: StoredAttachment) {
+	public async buffer(reference: AttachmentReference) {
 		const { attachment, expectedSize } = await this.originalAttachment(reference);
 
 		const url = new URL(attachment.url);
@@ -149,7 +149,7 @@ export class AttachmentTransfer {
 		return { attachment: Buffer.concat(chunks), name: reference.name };
 	}
 
-	public async remove(references: StoredAttachment[]) {
+	public async remove(references: AttachmentReference[]) {
 		for (const reference of references) {
 			await this.database.delete(files).where(eq(files.key, reference.key));
 		}

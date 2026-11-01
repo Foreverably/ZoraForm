@@ -1,7 +1,10 @@
+import { FormBrowsing } from './discord/browsing';
 import type { Client } from 'discord.js';
 import { createPostgresConnection } from '../../database/database';
 import { FormService } from './services/form-service';
-import { AttachmentStorage } from './services/attachment-storage';
+import { AttachmentTransfer } from './services/attachment-transfer';
+import { StaffPermissions } from './services/staff-permissions';
+import { RateLimits } from './services/rate-limits';
 import { DiscordDelivery } from './discord/delivery-worker';
 import { ApplicantFlow } from './discord/applicant-flow';
 import { FormBuilder } from './discord/form-builder';
@@ -12,14 +15,24 @@ let activeRuntime: ReturnType<typeof createRuntime> | undefined;
 export function createRuntime(client: Client, connectionString: string) {
 	const connection = createPostgresConnection(connectionString);
 	const formService = new FormService(connection.database);
-	const storage = new AttachmentStorage(
-		connection.database,
-		process.env.ATTACHMENT_DIRECTORY ?? '.data/attachments'
-	);
-	const delivery = new DiscordDelivery(client, formService, storage);
-	const applicants = new ApplicantFlow(client, formService, storage);
-	const builder = new FormBuilder(formService, delivery);
-	const runtime = { connection, formService, storage, delivery, applicants, builder };
+	const attachments = new AttachmentTransfer(connection.database, client);
+	const permissions = new StaffPermissions(connection.database);
+	const rateLimits = new RateLimits(connection.database);
+	const delivery = new DiscordDelivery(client, formService, attachments);
+	const applicants = new ApplicantFlow(client, formService, attachments);
+	const browsing = new FormBrowsing(formService, permissions, client);
+	const builder = new FormBuilder(formService, delivery, permissions, browsing);
+	const runtime = {
+		connection,
+		formService,
+		attachments,
+		permissions,
+		rateLimits,
+		browsing,
+		delivery,
+		applicants,
+		builder
+	};
 	activeRuntime = runtime;
 	return runtime;
 }

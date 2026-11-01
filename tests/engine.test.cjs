@@ -53,10 +53,18 @@ async function fixture(overrides = {}) {
 	const form = await formService.createForm('12345678901234568', reviewer, {
 		name: 'Staff application',
 		reviewChannelId: '12345678901234569',
-		reviewerIds: [reviewer],
 		questions: [question],
 		...overrides
 	});
+	await database
+		.insert(schema.staffGrants)
+		.values({
+			guildId: form.guildId,
+			capability: 'submissions.decide',
+			subjectType: 'user',
+			subjectId: reviewer
+		})
+		.onConflictDoNothing();
 	await formService.publishForm(form.id, form.guildId, reviewer, form.data.revision);
 	return { user, form: await formService.findForm(form.id), question };
 }
@@ -271,7 +279,7 @@ test('review decisions validate reviewer and thread; final state cannot be overw
 	);
 	await assert.rejects(
 		formService.recordDecision(submission.id, 'other', event('500'), 'accepted', 'ok'),
-		/not an authorized/
+		/do not have permission/
 	);
 	await formService.recordDecision(submission.id, reviewer, event('500'), 'accepted', 'Welcome');
 	await assert.rejects(

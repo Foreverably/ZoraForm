@@ -1,9 +1,17 @@
 import { getBotName } from '../../../lib/environment';
 import { ChannelType, PermissionFlagsBits, type Client, type TextChannel } from 'discord.js';
 import { and, eq, lte, inArray, ne } from 'drizzle-orm';
-import { jobs, sessions, submissions, files, processedInputs } from '../../../database/schema';
+import {
+	jobs,
+	sessions,
+	submissions,
+	files,
+	processedInputs,
+	rateLimitBuckets,
+	submissionReplies
+} from '../../../database/schema';
 import { FormService } from '../services/form-service';
-import { AttachmentStorage } from '../services/attachment-storage';
+import { AttachmentTransfer } from '../services/attachment-transfer';
 import { FormError } from '../domain/rules';
 import type { FormConfiguration, DeliveryJob } from '../domain/types';
 import { panel, prompt, buttons, button, answerPages, safe } from './components';
@@ -16,7 +24,7 @@ export class DiscordDelivery {
 	public constructor(
 		private readonly client: Client,
 		private readonly formService: FormService,
-		private readonly storage: AttachmentStorage
+		private readonly attachments: AttachmentTransfer
 	) {}
 
 	public start() {
@@ -43,7 +51,7 @@ export class DiscordDelivery {
 		const requiredPermissions = [
 			PermissionFlagsBits.ViewChannel,
 			PermissionFlagsBits.SendMessages,
-			PermissionFlagsBits.CreatePrivateThreads,
+			PermissionFlagsBits.CreatePublicThreads,
 			PermissionFlagsBits.SendMessagesInThreads,
 			PermissionFlagsBits.ReadMessageHistory,
 			PermissionFlagsBits.ManageThreads,
@@ -52,33 +60,8 @@ export class DiscordDelivery {
 
 		if (!channel.permissionsFor(botMember)?.has(requiredPermissions)) {
 			throw new FormError(
-				'The bot needs view, send, private-thread, thread-management, history and attachment permissions in the review channel.'
+				'The bot needs view, send, thread-creation, thread-management, history and attachment permissions in the review channel.'
 			);
-		}
-
-		if (
-			channel
-				.permissionsFor(channel.guild.roles.everyone)
-				?.has(PermissionFlagsBits.ViewChannel)
-		) {
-			throw new FormError('Choose a staff-only review channel hidden from @everyone.');
-		}
-
-		for (const reviewerId of configuration.reviewerIds) {
-			const reviewer = await channel.guild.members.fetch({ user: reviewerId, force: true });
-
-			if (
-				!channel
-					.permissionsFor(reviewer)
-					?.has([
-						PermissionFlagsBits.ViewChannel,
-						PermissionFlagsBits.SendMessagesInThreads
-					])
-			) {
-				throw new FormError(
-					`Reviewer ${reviewerId} needs access to the review channel and permission to send in threads.`
-				);
-			}
 		}
 
 		return channel;
@@ -148,6 +131,8 @@ export class DiscordDelivery {
 				return this.deliverDecision(deliveryJob.payload.id);
 			case 'close':
 				return this.archiveReview(deliveryJob.payload.id);
+			case 'reply':
+				return this.deliverReply(deliveryJob.payload.id);
 		}
 	}
 
@@ -212,7 +197,7 @@ export class DiscordDelivery {
 
 		for (let archivePage = 0; archivePage < 100; archivePage++) {
 			const archivedThreads = await channel.threads.fetchArchived({
-				type: 'private',
+				type: 'public',
 				limit: 100,
 				...(archiveCursor ? { before: archiveCursor } : {})
 			});
@@ -251,12 +236,7 @@ export class DiscordDelivery {
 			return;
 		}
 
-		const currentForm = await this.formService.findForm(submission.formId);
-		const reviewConfiguration = {
-			...submission.snapshot,
-			reviewerIds: currentForm.data.reviewerIds
-		};
-		const channel = await this.validateReviewChannel(submission.guildId, reviewConfiguration);
+		const channel = await this.validateReviewChannel(submission.guildId, submission.snapshot);
 		let thread = submission.threadId
 			? await this.client.channels.fetch(submission.threadId)
 			: await this.findReviewThread(channel, submission.id);
@@ -274,15 +254,14 @@ export class DiscordDelivery {
 				.where(eq(submissions.id, submission.id));
 			thread = await channel.threads.create({
 				name: `submission-${submission.id}`,
-				type: ChannelType.PrivateThread,
-				invitable: false,
+				type: ChannelType.PublicThread,
 				autoArchiveDuration: 1440
 			});
 		}
 
-		if (thread.type !== ChannelType.PrivateThread || thread.parentId !== channel.id) {
+		if (thread.type !== ChannelType.PublicThread || thread.parentId !== channel.id) {
 			throw new FormError(
-				'The stored review destination is not a private thread in the configured channel.'
+				'The stored review destination is not a submission thread in the configured channel.'
 			);
 		}
 
@@ -293,10 +272,6 @@ export class DiscordDelivery {
 
 		if (thread.archived) {
 			await thread.setArchived(false);
-		}
-
-		for (const reviewerId of reviewConfiguration.reviewerIds) {
-			await thread.members.add(reviewerId);
 		}
 
 		const existingMessages = await thread.messages.fetch({ limit: 100 });
@@ -335,10 +310,9 @@ export class DiscordDelivery {
 
 					await thread.send({
 						...content,
-						files: answer.map((attachment) => ({
-							attachment: this.storage.path(attachment.key),
-							name: attachment.name
-						}))
+						files: await Promise.all(
+							answer.map((attachment) => this.attachments.buffer(attachment))
+						)
 					});
 				} else {
 					await thread.send(content);
@@ -355,7 +329,8 @@ export class DiscordDelivery {
 					[
 						buttons(
 							button(`zf:r:${submission.id}:accepted`, 'Accept'),
-							button(`zf:r:${submission.id}:rejected`, 'Reject')
+							button(`zf:r:${submission.id}:rejected`, 'Reject'),
+							button(`zf:r:${submission.id}:reply`, 'Reply')
 						)
 					]
 				)
@@ -364,7 +339,7 @@ export class DiscordDelivery {
 
 		await this.formService.database
 			.update(submissions)
-			.set({ deliveryState: 'ready', snapshot: reviewConfiguration })
+			.set({ deliveryState: 'ready' })
 			.where(eq(submissions.id, submission.id));
 	}
 
@@ -390,6 +365,85 @@ export class DiscordDelivery {
 		}
 	}
 
+	private async deliverReply(replyId: string) {
+		const [reply] = await this.formService.database
+			.select()
+			.from(submissionReplies)
+			.where(eq(submissionReplies.id, replyId));
+
+		if (!reply || reply.deliveredAt) {
+			return;
+		}
+
+		const submission = await this.formService.findSubmission(reply.submissionId);
+
+		if (submission.deliveryState === 'purged') {
+			return;
+		}
+
+		if (submission.threadId) {
+			const thread = await this.client.channels.fetch(submission.threadId);
+
+			if (thread?.type === ChannelType.PublicThread) {
+				const wasArchived = thread.archived;
+
+				if (wasArchived) {
+					await thread.setArchived(false);
+				}
+
+				const marker = `zf-reply-log:${reply.id}`;
+				const threadMessages = await thread.messages.fetch({ limit: 100 });
+
+				if (
+					!threadMessages.some(
+						(message) =>
+							message.author.id === this.client.user?.id &&
+							JSON.stringify(message.components).includes(marker)
+					)
+				) {
+					await thread.send(
+						panel(
+							`Staff reply by ${reply.actorId}\n${safe(reply.content)}\n-# ${marker}`
+						)
+					);
+				}
+
+				const currentSubmission = await this.formService.findSubmission(submission.id);
+
+				if (currentSubmission.status !== 'pending') {
+					await thread.setLocked(true);
+				}
+
+				if (wasArchived || currentSubmission.status !== 'pending') {
+					await thread.setArchived(true);
+				}
+			}
+		}
+
+		const channel = await (await this.client.users.fetch(submission.userId)).createDM();
+		const marker = `zf-reply:${reply.id}`;
+		const messages = await channel.messages.fetch({ limit: 100 });
+
+		if (
+			!messages.some(
+				(message) =>
+					message.author.id === this.client.user?.id &&
+					JSON.stringify(message.components).includes(marker)
+			)
+		) {
+			await channel.send(
+				panel(
+					`## Staff reply: ${safe(submission.snapshot.name)}\nSubmission ${submission.id}\n${safe(reply.content)}\n-# ${marker}`
+				)
+			);
+		}
+
+		await this.formService.database
+			.update(submissionReplies)
+			.set({ deliveredAt: new Date() })
+			.where(eq(submissionReplies.id, replyId));
+	}
+
 	private async archiveReview(submissionId: string) {
 		const submission = await this.formService.findSubmission(submissionId);
 
@@ -399,7 +453,7 @@ export class DiscordDelivery {
 
 		const thread = await this.client.channels.fetch(submission.threadId);
 
-		if (!thread || thread.type !== ChannelType.PrivateThread) {
+		if (!thread || thread.type !== ChannelType.PublicThread) {
 			throw new FormError('Review thread is missing.');
 		}
 
@@ -460,59 +514,7 @@ export class DiscordDelivery {
 		});
 	}
 
-	private async reconcileReviewers() {
-		const openReviews = await this.formService.database
-			.select()
-			.from(submissions)
-			.where(and(eq(submissions.status, 'pending'), eq(submissions.deliveryState, 'ready')));
-
-		for (const submission of openReviews) {
-			const form = await this.formService.findForm(submission.formId);
-			const previousReviewers = submission.snapshot.reviewerIds;
-			const currentReviewers = form.data.reviewerIds;
-
-			if (
-				previousReviewers.length === currentReviewers.length &&
-				previousReviewers.every((reviewerId) => currentReviewers.includes(reviewerId))
-			) {
-				continue;
-			}
-
-			try {
-				const thread = submission.threadId
-					? await this.client.channels.fetch(submission.threadId)
-					: null;
-
-				if (!thread || thread.type !== ChannelType.PrivateThread) {
-					continue;
-				}
-
-				if (thread.archived) {
-					await thread.setArchived(false);
-				}
-
-				for (const reviewerId of previousReviewers.filter(
-					(previousId) => !currentReviewers.includes(previousId)
-				)) {
-					await thread.members.remove(reviewerId);
-				}
-
-				for (const reviewerId of currentReviewers) {
-					await thread.members.add(reviewerId);
-				}
-
-				await this.formService.database
-					.update(submissions)
-					.set({ snapshot: { ...submission.snapshot, reviewerIds: currentReviewers } })
-					.where(eq(submissions.id, submission.id));
-			} catch {
-				console.error(`Reviewer membership synchronization failed for ${submission.id}.`);
-			}
-		}
-	}
-
 	private async cleanup() {
-		await this.reconcileReviewers();
 		await this.formService.database
 			.update(sessions)
 			.set({ status: 'expired' })
@@ -567,6 +569,9 @@ export class DiscordDelivery {
 					.set({ answers: [], snapshot: { ...submission.snapshot, questions: [] } })
 					.where(eq(sessions.id, submission.sessionId));
 				await database.delete(jobs).where(eq(jobs.payload, { id: submission.id }));
+				await database
+					.delete(submissionReplies)
+					.where(eq(submissionReplies.submissionId, submission.id));
 			});
 		}
 
@@ -594,7 +599,10 @@ export class DiscordDelivery {
 			.from(files)
 			.where(lte(files.expiresAt, new Date()))
 			.limit(100);
-		await this.storage.remove(expiredFiles);
+		await this.attachments.remove(expiredFiles);
+		await this.formService.database
+			.delete(rateLimitBuckets)
+			.where(lte(rateLimitBuckets.windowStartedAt, new Date(Date.now() - 86400000)));
 		await this.formService.database
 			.delete(processedInputs)
 			.where(lte(processedInputs.createdAt, new Date(Date.now() - 30 * 86400000)));

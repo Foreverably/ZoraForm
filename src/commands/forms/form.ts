@@ -1,14 +1,11 @@
-import { getBotName } from '../../lib/environment';
 import { ApplyOptions } from '@sapphire/decorators';
 import { Command } from '@sapphire/framework';
-import { ChannelType, InteractionContextType, MessageFlags, PermissionFlagsBits } from 'discord.js';
-import { and, eq, desc } from 'drizzle-orm';
+import { ChannelType, InteractionContextType, MessageFlags } from 'discord.js';
+import { getBotName } from '../../lib/environment';
 import { formsRuntime } from '../../modules/forms/runtime';
-import { explainFormError } from '../../modules/forms/discord/components';
-import { requireFormAdmin } from '../../modules/forms/discord/form-builder';
-import { managePanel, panel, safe } from '../../modules/forms/discord/components';
-import { submissions } from '../../database/schema';
+import { explainFormError, managePanel } from '../../modules/forms/discord/components';
 import { FormError } from '../../modules/forms/domain/rules';
+import { staffCapabilities, type StaffCapability } from '../../modules/forms/domain/permissions';
 
 @ApplyOptions<Command.Options>({ description: `Create and manage ${getBotName()} questionnaires.` })
 export class FormCommand extends Command {
@@ -18,7 +15,7 @@ export class FormCommand extends Command {
 				.setName('form')
 				.setDescription(this.description)
 				.setContexts(InteractionContextType.Guild)
-				.setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+				.setDefaultMemberPermissions(null)
 				.addSubcommand((subcommand) =>
 					subcommand
 						.setName('create')
@@ -34,20 +31,14 @@ export class FormCommand extends Command {
 							option
 								.setName('review-channel')
 								.setDescription(
-									'Staff-only text channel for private review threads'
+									'Submission channel; Discord controls who can read it'
 								)
 								.addChannelTypes(ChannelType.GuildText)
 								.setRequired(true)
 						)
-						.addUserOption((option) =>
-							option
-								.setName('reviewer')
-								.setDescription('Staff member who will review submissions')
-								.setRequired(true)
-						)
 				)
 				.addSubcommand((subcommand) =>
-					subcommand.setName('list').setDescription('List forms in this server')
+					subcommand.setName('list').setDescription('Browse forms in this server')
 				)
 				.addSubcommand((subcommand) =>
 					subcommand
@@ -71,7 +62,7 @@ export class FormCommand extends Command {
 				.addSubcommand((subcommand) =>
 					subcommand
 						.setName('submissions')
-						.setDescription('Inspect recent submission and delivery status')
+						.setDescription('Browse submissions from a channel you can read')
 						.addStringOption((option) =>
 							option.setName('id').setDescription('Form ID').setRequired(true)
 						)
@@ -79,21 +70,62 @@ export class FormCommand extends Command {
 				.addSubcommand((subcommand) =>
 					subcommand
 						.setName('blacklist')
-						.setDescription('Block or unblock an applicant across this server')
-						.addUserOption((option) =>
-							option.setName('user').setDescription('Applicant').setRequired(true)
-						)
+						.setDescription('Block or unblock a user or role')
 						.addBooleanOption((option) =>
 							option
 								.setName('blocked')
 								.setDescription('True to block, false to unblock')
 								.setRequired(true)
 						)
+						.addUserOption((option) =>
+							option
+								.setName('user')
+								.setDescription('User to block; choose either a user or a role')
+						)
+						.addRoleOption((option) =>
+							option
+								.setName('role')
+								.setDescription('Role to block; choose either a user or a role')
+						)
+						.addStringOption((option) =>
+							option
+								.setName('form')
+								.setDescription('Optional form ID; omit to apply server-wide')
+						)
+				)
+				.addSubcommand((subcommand) =>
+					subcommand
+						.setName('permission')
+						.setDescription('Grant or revoke a specific staff action')
+						.addStringOption((option) =>
+							option
+								.setName('action')
+								.setDescription('Staff capability')
+								.setRequired(true)
+								.addChoices(
+									...staffCapabilities.map((capability) => ({
+										name: capability,
+										value: capability
+									}))
+								)
+						)
+						.addBooleanOption((option) =>
+							option
+								.setName('allowed')
+								.setDescription('True to grant, false to revoke')
+								.setRequired(true)
+						)
+						.addUserOption((option) =>
+							option.setName('user').setDescription('User receiving the grant')
+						)
+						.addRoleOption((option) =>
+							option.setName('role').setDescription('Role receiving the grant')
+						)
 				)
 				.addSubcommand((subcommand) =>
 					subcommand
 						.setName('repair')
-						.setDescription('Recover a failed private review delivery')
+						.setDescription('Recover a failed submission delivery')
 						.addStringOption((option) =>
 							option
 								.setName('submission')
@@ -104,7 +136,7 @@ export class FormCommand extends Command {
 							option
 								.setName('recreate')
 								.setDescription(
-									'Allow a replacement after checking that the thread is missing'
+									'Allow a replacement after checking the thread is missing'
 								)
 						)
 				)
@@ -115,58 +147,116 @@ export class FormCommand extends Command {
 		await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
 		try {
-			const guild = await requireFormAdmin(interaction.guild, interaction.user.id);
 			const runtime = formsRuntime();
+			await runtime.rateLimits.enforce(interaction.user.id, 'command');
+			const guild = interaction.guild;
+
+			if (!guild) {
+				throw new FormError('Manage forms from a server.');
+			}
+
+			const identity = await runtime.permissions.identify(guild, interaction.user.id);
 			const action = interaction.options.getSubcommand();
 
+			if (action === 'permission' || action === 'blacklist') {
+				const user = interaction.options.getUser('user');
+				const role = interaction.options.getRole('role');
+
+				if (Boolean(user) === Boolean(role)) {
+					throw new FormError('Choose exactly one user or one role.');
+				}
+
+				const subjectId = user?.id ?? role!.id;
+				const subjectType = user ? 'user' : 'role';
+
+				if (action === 'permission') {
+					const capability = interaction.options.getString(
+						'action',
+						true
+					) as StaffCapability;
+
+					if (!staffCapabilities.includes(capability)) {
+						throw new FormError('Choose a supported staff action.');
+					}
+
+					await runtime.permissions.configure(
+						guild.id,
+						identity,
+						capability,
+						subjectType,
+						subjectId,
+						interaction.options.getBoolean('allowed', true)
+					);
+					await runtime.formService.recordAuditEvent(
+						runtime.formService.database,
+						guild.id,
+						identity.userId,
+						'staff.permission.configure',
+						`${capability}:${subjectType}:${subjectId}`
+					);
+					await interaction.editReply(
+						'Staff permission updated. Channel visibility remains controlled by Discord.'
+					);
+					return;
+				}
+
+				await runtime.permissions.assertAllowed(guild.id, 'forms.blacklist', identity);
+				const formId = interaction.options.getString('form');
+				const blocked = interaction.options.getBoolean('blocked', true);
+
+				if (formId) {
+					await runtime.formService.setFormBlacklist(
+						formId,
+						guild.id,
+						identity.userId,
+						subjectType,
+						subjectId,
+						blocked
+					);
+				} else if (role) {
+					await runtime.formService.setRoleBlacklist(
+						guild.id,
+						identity.userId,
+						role.id,
+						blocked
+					);
+				} else {
+					await runtime.formService.setGuildBlacklist(
+						guild.id,
+						identity.userId,
+						user!.id,
+						blocked
+					);
+				}
+
+				await interaction.editReply(`${formId ? 'Form' : 'Server'} blacklist updated.`);
+				return;
+			}
+
 			if (action === 'create') {
-				const reviewChannel = interaction.options.getChannel('review-channel', true);
-				const reviewer = interaction.options.getUser('reviewer', true);
-				const form = await runtime.formService.createForm(guild.id, interaction.user.id, {
+				await runtime.permissions.assertAllowed(guild.id, 'forms.create', identity);
+				const form = await runtime.formService.createForm(guild.id, identity.userId, {
 					name: interaction.options.getString('name', true),
-					reviewChannelId: reviewChannel.id,
-					reviewerIds: [reviewer.id]
+					reviewChannelId: interaction.options.getChannel('review-channel', true).id
 				});
-				await interaction.editReply(managePanel(form, interaction.user.id));
+				await interaction.editReply(managePanel(form, identity.userId));
 				return;
 			}
 
 			if (action === 'list') {
-				const serverForms = await runtime.formService.listForms(guild.id);
-				const description = serverForms
-					.slice(0, 20)
-					.map(
-						(form) =>
-							`${safe(form.data.name)} · ${form.archived ? 'archived' : form.published ? 'published' : 'draft'}\n${form.id}`
-					)
-					.join('\n\n');
-				await interaction.editReply(
-					panel(
-						`## Server forms\n${description || 'No forms yet. Use /form create.'}${serverForms.length > 20 ? '\nShowing the first 20 forms.' : ''}`
-					)
-				);
-				return;
-			}
-
-			if (action === 'blacklist') {
-				await runtime.formService.setGuildBlacklist(
-					guild.id,
-					interaction.user.id,
-					interaction.options.getUser('user', true).id,
-					interaction.options.getBoolean('blocked', true)
-				);
-				await interaction.editReply('Server blacklist updated.');
+				await interaction.editReply(await runtime.browsing.forms(guild, identity.userId));
 				return;
 			}
 
 			if (action === 'repair') {
+				await runtime.permissions.assertAllowed(guild.id, 'submissions.repair', identity);
 				await runtime.delivery.repairReview(
 					interaction.options.getString('submission', true),
 					guild.id,
-					interaction.user.id,
+					identity.userId,
 					interaction.options.getBoolean('recreate') ?? false
 				);
-				await interaction.editReply('The review delivery has been queued for recovery.');
+				await interaction.editReply('Submission delivery has been queued for recovery.');
 				return;
 			}
 
@@ -179,7 +269,8 @@ export class FormCommand extends Command {
 			}
 
 			if (action === 'archive') {
-				await runtime.formService.archiveForm(form.id, guild.id, interaction.user.id);
+				await runtime.permissions.assertAllowed(guild.id, 'forms.archive', identity);
+				await runtime.formService.archiveForm(form.id, guild.id, identity.userId);
 				await interaction.editReply(
 					'Form archived. It is no longer available in the DM directory.'
 				);
@@ -187,27 +278,14 @@ export class FormCommand extends Command {
 			}
 
 			if (action === 'submissions') {
-				const recentSubmissions = await runtime.formService.database
-					.select()
-					.from(submissions)
-					.where(and(eq(submissions.formId, form.id), eq(submissions.guildId, guild.id)))
-					.orderBy(desc(submissions.createdAt))
-					.limit(15);
-				const statuses = recentSubmissions
-					.map(
-						(submission) =>
-							`${submission.id}\n${submission.status} · review ${submission.deliveryState} · ${submission.archived ? 'archived' : 'open'}`
-					)
-					.join('\n\n');
 				await interaction.editReply(
-					panel(
-						`## ${safe(form.data.name)} submissions\n${statuses || 'No submissions yet.'}`
-					)
+					await runtime.browsing.submissions(guild, form.id, identity.userId)
 				);
 				return;
 			}
 
-			await interaction.editReply(managePanel(form, interaction.user.id));
+			await runtime.browsing.assertManagement(guild, identity.userId);
+			await interaction.editReply(managePanel(form, identity.userId));
 		} catch (error) {
 			await interaction.editReply(explainFormError(error));
 		}

@@ -1,15 +1,16 @@
+import { StaffPermissions } from '../services/staff-permissions';
+import { FormBrowsing } from './browsing';
+import type { StaffCapability } from '../domain/permissions';
 import {
 	ActionRowBuilder,
 	StringSelectMenuBuilder,
 	ModalBuilder,
 	TextInputBuilder,
 	TextInputStyle,
-	PermissionFlagsBits,
 	MessageFlags,
 	type ButtonInteraction,
 	type StringSelectMenuInteraction,
-	type ModalSubmitInteraction,
-	type Guild
+	type ModalSubmitInteraction
 } from 'discord.js';
 import { randomUUID } from 'node:crypto';
 import { FormService } from '../services/form-service';
@@ -17,7 +18,7 @@ import { DiscordDelivery } from './delivery-worker';
 import { formQuestionSchema, discordSnowflakeSchema } from '../domain/schemas';
 import { FormError } from '../domain/rules';
 import type { FormConfiguration, FormQuestion } from '../domain/types';
-import { managePanel, panel, safe } from './components';
+import { managePanel, panel } from './components';
 
 type BuilderInteraction = ButtonInteraction | StringSelectMenuInteraction | ModalSubmitInteraction;
 interface ModalField {
@@ -57,29 +58,33 @@ function parseIds(value: string) {
 	return [...new Set(identifiers.map((identifier) => discordSnowflakeSchema.parse(identifier)))];
 }
 
-export async function requireFormAdmin(guild: Guild | null, userId: string) {
-	if (!guild) {
-		throw new FormError('Manage forms from a server.');
-	}
-
-	const member = await guild.members.fetch({ user: userId, force: true });
-
-	if (!member.permissions.has(PermissionFlagsBits.ManageGuild)) {
-		throw new FormError('You need Manage Server permission to manage forms.');
-	}
-
-	return guild;
-}
-
 export class FormBuilder {
 	public constructor(
 		private readonly formService: FormService,
-		private readonly delivery: DiscordDelivery
+		private readonly delivery: DiscordDelivery,
+		private readonly permissions: StaffPermissions,
+		private readonly browsing: FormBrowsing
 	) {}
 
 	public async handleInteraction(interaction: BuilderInteraction) {
-		const guild = await requireFormAdmin(interaction.guild, interaction.user.id);
+		const guild = interaction.guild;
+
+		if (!guild) {
+			throw new FormError('Manage forms from a server.');
+		}
+
+		const identity = await this.permissions.identify(guild, interaction.user.id);
 		const segments = interaction.customId.split(':');
+		const requestedAction =
+			segments[1] === 'config' ? segments[4] : segments[1] === 'm' ? segments[4] : 'edit';
+		const capability: StaffCapability =
+			requestedAction === 'publish'
+				? 'forms.publish'
+				: requestedAction === 'archive'
+					? 'forms.archive'
+					: 'forms.edit';
+		await this.permissions.assertAllowed(guild.id, capability, identity);
+
 		const formId = segments[2]!;
 		const panelOwnerId = segments[3];
 
@@ -184,7 +189,7 @@ export class FormBuilder {
 					},
 					{
 						id: 'deny',
-						label: 'Denied role IDs (always deny)',
+						label: 'Blacklisted role IDs (always deny)',
 						value: form.data.denyRoles.join(', '),
 						required: false
 					},
@@ -238,13 +243,8 @@ export class FormBuilder {
 				modal(modalId, 'Staff review', [
 					{
 						id: 'channel',
-						label: 'Private review parent channel ID',
+						label: 'Submission channel ID',
 						value: form.data.reviewChannelId
-					},
-					{
-						id: 'reviewers',
-						label: 'Reviewer user IDs, separated by commas',
-						value: form.data.reviewerIds.join(', ')
 					}
 				])
 			);
@@ -337,18 +337,7 @@ export class FormBuilder {
 		} else if (action === 'archive') {
 			await this.formService.archiveForm(formId, guild.id, interaction.user.id);
 		} else if (action === 'preview') {
-			const preview = form.data.questions
-				.slice(0, 10)
-				.map(
-					(question, index) =>
-						`${index + 1}. ${safe(question.prompt)}\nType: ${question.type} · ${question.required ? 'required' : 'optional'}`
-				)
-				.join('\n\n');
-			await interaction.editReply(
-				panel(
-					`## Preview: ${safe(form.data.name)}\n${safe(form.data.description)}\n\n${preview || 'No questions yet.'}\n\nShowing up to ten questions. ${form.data.questions.length} total.`
-				)
-			);
+			await interaction.editReply(this.browsing.preview(form, interaction.user.id));
 			return;
 		}
 
@@ -541,8 +530,7 @@ export class FormBuilder {
 				if (action === 'review') {
 					return {
 						...configuration,
-						reviewChannelId: discordSnowflakeSchema.parse(value('channel')),
-						reviewerIds: parseIds(value('reviewers'))
+						reviewChannelId: discordSnowflakeSchema.parse(value('channel'))
 					};
 				}
 

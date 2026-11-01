@@ -104,7 +104,7 @@ export function prompt(session: QuestionnaireSession) {
 		hint = 'Select one answer below.';
 	}
 	if (question.type === 'attachment') {
-		hint = 'Attach 1–3 PNG, JPEG, PDF or text files. Maximum 8 MiB each and 20 MiB total.';
+		hint = 'Attach 1–3 files. Maximum 8 MiB each and 20 MiB total.';
 	}
 	const rows: Row[] = [];
 	if (question.type === 'choice') {
@@ -157,7 +157,7 @@ export function managePanel(form: FormRecord, actor: string) {
 			buttons(
 				button(id('details'), 'Name & description'),
 				button(id('access'), 'Access'),
-				button(id('policy'), 'FormSubmission policy'),
+				button(id('policy'), 'Submission policy'),
 				button(id('review'), 'Staff review')
 			),
 			buttons(

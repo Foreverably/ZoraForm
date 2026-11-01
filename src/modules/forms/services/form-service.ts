@@ -1,3 +1,5 @@
+import { StaffPermissions } from './staff-permissions';
+import type { StaffIdentity } from '../domain/permissions';
 import { randomUUID } from 'node:crypto';
 import { and, eq, gt, lte, inArray, or, isNull, sql, desc } from 'drizzle-orm';
 import type { Database, Queryable } from '../../../database/database';
@@ -7,6 +9,8 @@ import {
 	submissions,
 	userLocks,
 	guildBlacklist,
+	roleBlacklist,
+	submissionReplies,
 	auditEvents,
 	jobs,
 	processedInputs,
@@ -15,7 +19,7 @@ import {
 import { assertFormAccess, FormError, validateQuestionAnswer } from '../domain/rules';
 import { formConfigurationSchema } from '../domain/schemas';
 import type {
-	StoredAttachment,
+	AttachmentReference,
 	FormRecord,
 	FormConfiguration,
 	DeliveryJob,
@@ -161,6 +165,85 @@ export class FormService {
 		});
 	}
 
+	public async setFormBlacklist(
+		formId: string,
+		guildId: string,
+		actorId: string,
+		subjectType: 'user' | 'role',
+		subjectId: string,
+		blocked: boolean
+	) {
+		await this.database.transaction(async (database) => {
+			const [form] = await database
+				.select()
+				.from(forms)
+				.where(and(eq(forms.id, formId), eq(forms.guildId, guildId)))
+				.for('update');
+
+			if (!form) {
+				throw new FormError('Form not found in this server.');
+			}
+
+			const field = subjectType === 'user' ? 'blacklist' : 'denyRoles';
+			const updateList = (identifiers: string[]) =>
+				blocked
+					? [...new Set([...identifiers, subjectId])]
+					: identifiers.filter((identifier) => identifier !== subjectId);
+
+			await database
+				.update(forms)
+				.set({
+					data: {
+						...form.data,
+						[field]: updateList(form.data[field]),
+						revision: form.data.revision + 1
+					},
+					published: form.published
+						? { ...form.published, [field]: updateList(form.published[field]) }
+						: null
+				})
+				.where(eq(forms.id, formId));
+
+			await this.recordAuditEvent(
+				database,
+				guildId,
+				actorId,
+				`form.blacklist.${subjectType}.${blocked ? 'add' : 'remove'}`,
+				formId
+			);
+		});
+	}
+
+	public async setRoleBlacklist(
+		guildId: string,
+		actorId: string,
+		roleId: string,
+		blocked: boolean
+	) {
+		await this.database.transaction(async (database) => {
+			if (blocked) {
+				await database
+					.insert(roleBlacklist)
+					.values({ guildId, roleId })
+					.onConflictDoNothing();
+			} else {
+				await database
+					.delete(roleBlacklist)
+					.where(
+						and(eq(roleBlacklist.guildId, guildId), eq(roleBlacklist.roleId, roleId))
+					);
+			}
+
+			await this.recordAuditEvent(
+				database,
+				guildId,
+				actorId,
+				blocked ? 'blacklist.role.add' : 'blacklist.role.remove',
+				roleId
+			);
+		});
+	}
+
 	private withUserLock<T>(userId: string, work: (database: Queryable) => Promise<T>) {
 		return this.database.transaction(async (database) => {
 			await database.insert(userLocks).values({ userId: userId }).onConflictDoNothing();
@@ -195,6 +278,21 @@ export class FormService {
 		) {
 			throw new FormError('This form is not available to you.');
 		}
+		const deniedRoles = await database
+			.select()
+			.from(roleBlacklist)
+			.where(
+				and(
+					eq(roleBlacklist.guildId, form.guildId),
+					inArray(roleBlacklist.roleId, [...(memberRoleIds ?? [])])
+				)
+			)
+			.limit(1);
+
+		if (deniedRoles.length) {
+			throw new FormError('This form is not available to you.');
+		}
+
 		await this.assertSubmissionPolicy(form, userId, database);
 	}
 
@@ -338,7 +436,7 @@ export class FormService {
 		memberRoleIds: readonly string[] | null,
 		inputId: string,
 		answerText: string,
-		attachments: StoredAttachment[] = [],
+		attachments: AttachmentReference[] = [],
 		reference?: string
 	) {
 		return this.withUserLock(userId, async (database) => {
@@ -603,8 +701,7 @@ export class FormService {
 					formId: session.formId,
 					snapshot: {
 						...session.snapshot,
-						reviewChannelId: form.published!.reviewChannelId,
-						reviewerIds: form.published!.reviewerIds
+						reviewChannelId: form.published!.reviewChannelId
 					},
 					answers: session.answers,
 					expiresAt: expires
@@ -635,7 +732,13 @@ export class FormService {
 		reviewerId: string,
 		threadId: string,
 		decision: 'accepted' | 'rejected',
-		reason: string
+		reason: string,
+		identity: StaffIdentity = {
+			userId: reviewerId,
+			roleIds: [],
+			manageServer: false,
+			administrator: false
+		}
 	) {
 		await this.database.transaction(async (database) => {
 			const [session] = await database
@@ -644,12 +747,18 @@ export class FormService {
 				.where(eq(submissions.id, id))
 				.for('update');
 			if (!session || session.threadId !== threadId) {
-				throw new FormError('This review control does not belong to this threadId.');
+				throw new FormError('This review control does not belong to this thread.');
 			}
-			const form = await this.findForm(session.formId, database);
-			if (!form.data.reviewerIds.includes(reviewerId)) {
-				throw new FormError('You are not an authorized reviewerId.');
+			if (identity.userId !== reviewerId) {
+				throw new FormError('The staff identity does not match the reviewer.');
 			}
+
+			await new StaffPermissions(this.database).assertAllowed(
+				session.guildId,
+				'submissions.decide',
+				identity,
+				database
+			);
 			if (session.status !== 'pending') {
 				throw new FormError(`This submission is already ${session.status}.`);
 			}
@@ -670,6 +779,82 @@ export class FormService {
 			);
 			await this.enqueueDelivery(database, 'receipt', id);
 			await this.enqueueDelivery(database, 'close', id);
+		});
+	}
+
+	public async replyToSubmission(
+		submissionId: string,
+		identity: StaffIdentity,
+		threadId: string,
+		content: string,
+		sourceInteractionId?: string
+	) {
+		const replyText = content.trim();
+
+		if (!replyText || replyText.length > 1000) {
+			throw new FormError('Write a reply containing 1–1,000 characters.');
+		}
+
+		return this.database.transaction(async (database) => {
+			const [submission] = await database
+				.select()
+				.from(submissions)
+				.where(eq(submissions.id, submissionId))
+				.for('update');
+
+			if (
+				!submission ||
+				submission.threadId !== threadId ||
+				submission.deliveryState === 'purged' ||
+				submission.expiresAt <= new Date()
+			) {
+				throw new FormError(
+					'This reply does not belong to an available submission thread.'
+				);
+			}
+
+			await new StaffPermissions(this.database).assertAllowed(
+				submission.guildId,
+				'submissions.reply',
+				identity,
+				database
+			);
+
+			if (sourceInteractionId) {
+				const [existing] = await database
+					.select()
+					.from(submissionReplies)
+					.where(eq(submissionReplies.sourceInteractionId, sourceInteractionId));
+
+				if (existing) {
+					if (
+						existing.submissionId !== submissionId ||
+						existing.actorId !== identity.userId
+					) {
+						throw new FormError('This reply belongs to another staff action.');
+					}
+
+					return existing.id;
+				}
+			}
+
+			const replyId = randomUUID();
+			await database.insert(submissionReplies).values({
+				id: replyId,
+				sourceInteractionId: sourceInteractionId ?? null,
+				submissionId,
+				actorId: identity.userId,
+				content: replyText
+			});
+			await this.enqueueDelivery(database, 'reply', replyId);
+			await this.recordAuditEvent(
+				database,
+				submission.guildId,
+				identity.userId,
+				'submission.reply',
+				submissionId
+			);
+			return replyId;
 		});
 	}
 

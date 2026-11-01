@@ -3,9 +3,6 @@ process.env.BotName = 'Test Forms';
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
-const { mkdtemp, rm, readFile } = require('node:fs/promises');
-const { tmpdir } = require('node:os');
-const { join } = require('node:path');
 const { PGlite } = require('@electric-sql/pglite');
 const { drizzle } = require('drizzle-orm/pglite');
 const { migrate } = require('drizzle-orm/pglite/migrator');
@@ -15,7 +12,7 @@ const schema = require('../dist/database/schema');
 const { FormService } = require('../dist/modules/forms/services/form-service');
 const { ApplicantFlow } = require('../dist/modules/forms/discord/applicant-flow');
 const { DiscordDelivery } = require('../dist/modules/forms/discord/delivery-worker');
-const { AttachmentStorage } = require('../dist/modules/forms/services/attachment-storage');
+const { AttachmentTransfer } = require('../dist/modules/forms/services/attachment-transfer');
 const { FormBuilder } = require('../dist/modules/forms/discord/form-builder');
 const { formQuestionSchema } = require('../dist/modules/forms/domain/schemas');
 const {
@@ -24,7 +21,7 @@ const {
 	managePanel,
 	answerPages
 } = require('../dist/modules/forms/discord/components');
-let database, formService, postgres, directory;
+let database, formService, postgres;
 const guildId = '12345678901234567';
 const reviewerId = '12345678901234568';
 const reviewChannelId = '12345678901234569';
@@ -34,11 +31,9 @@ before(async () => {
 	database = drizzle(postgres, { schema });
 	await migrate(database, { migrationsFolder: './drizzle' });
 	formService = new FormService(database);
-	directory = await mkdtemp(join(tmpdir(), 'zoraforms-test-'));
 });
 after(async () => {
 	await postgres.close();
-	await rm(directory, { recursive: true, force: true });
 });
 
 function mockDiscord() {
@@ -51,9 +46,20 @@ function mockDiscord() {
 	const id = () => String(++nextId);
 	const messageChannel = () => {
 		const messages = new Collection();
-		return {
+		const channelId = id();
+		const channel = {
+			id: channelId,
+			isDMBased: () => true,
 			isSendable: () => true,
-			messages: { fetch: async () => messages },
+			messages: {
+				store: messages,
+				fetch: async (request) =>
+					typeof request === 'string'
+						? messages.get(request)
+						: request?.message
+							? messages.get(request.message)
+							: messages
+			},
 			send: async (payload) => {
 				const components = payload.components?.map((component) => component.toJSON()) ?? [];
 				const message = { id: id(), author: { id: 'bot' }, components, payload };
@@ -61,6 +67,8 @@ function mockDiscord() {
 				return message;
 			}
 		};
+		channels.set(channelId, channel);
+		return channel;
 	};
 	const guild = {
 		id: guildId,
@@ -93,7 +101,7 @@ function mockDiscord() {
 					...messageChannel(),
 					id: id(),
 					name: configuration.name,
-					type: ChannelType.PrivateThread,
+					type: ChannelType.PublicThread,
 					parentId: reviewChannelId,
 					archived: false,
 					locked: false,
@@ -109,7 +117,7 @@ function mockDiscord() {
 						reviewThreads.delete(this.id);
 					}
 				};
-				assert.equal(configuration.invitable, false);
+				assert.equal(configuration.type, ChannelType.PublicThread);
 				reviewThreads.set(thread.id, thread);
 				channels.set(thread.id, thread);
 				if (loseCreationResponse) {
@@ -150,9 +158,9 @@ function mockDiscord() {
 
 async function setupFlow() {
 	const discord = mockDiscord();
-	const storage = new AttachmentStorage(database, directory);
-	const delivery = new DiscordDelivery(discord.client, formService, storage);
-	const applicant = new ApplicantFlow(discord.client, formService, storage);
+	const attachments = new AttachmentTransfer(database, discord.client);
+	const delivery = new DiscordDelivery(discord.client, formService, attachments);
+	const applicant = new ApplicantFlow(discord.client, formService, attachments);
 	const userId = randomUUID();
 	const question = formQuestionSchema.parse({
 		id: randomUUID(),
@@ -163,11 +171,19 @@ async function setupFlow() {
 	const form = await formService.createForm(guildId, reviewerId, {
 		name: 'Test application',
 		reviewChannelId,
-		reviewerIds: [reviewerId],
 		questions: [question]
 	});
+	await database
+		.insert(schema.staffGrants)
+		.values({
+			guildId,
+			capability: 'submissions.decide',
+			subjectType: 'user',
+			subjectId: reviewerId
+		})
+		.onConflictDoNothing();
 	await formService.publishForm(form.id, guildId, reviewerId, form.data.revision);
-	return { discord, storage, delivery, applicant, userId, form };
+	return { discord, attachments, delivery, applicant, userId, form };
 }
 
 async function finishAnswers(flow) {
@@ -188,7 +204,7 @@ async function finishAnswers(flow) {
 	return formService.findActiveSession(flow.userId);
 }
 
-test('first DM opens eligible forms, then submission reaches a private review and archives after a decision', async () => {
+test('first DM opens eligible forms, then submission reaches a channel-visible review and archives after a decision', async () => {
 	const flow = await setupFlow();
 	const channel = await (await flow.discord.client.users.fetch(flow.userId)).createDM();
 	await flow.applicant.handleMessage({
@@ -217,7 +233,7 @@ test('first DM opens eligible forms, then submission reaches a private review an
 	const delivered = await formService.findSubmission(submission.id);
 	assert.equal(delivered.deliveryState, 'ready');
 	const thread = flow.discord.channels.get(delivered.threadId);
-	assert.equal(thread.type, ChannelType.PrivateThread);
+	assert.equal(thread.type, ChannelType.PublicThread);
 	assert.equal(
 		flow.discord.operations.filter((operation) => operation === 'create-thread').length,
 		1
@@ -341,52 +357,67 @@ test('all question panels, long summaries and maximum-size builder panels valida
 	}
 });
 
-test('attachment contents are saved privately and deleted when their answer is rejected', async () => {
+function incomingAttachment(flow, channel, name = 'example.txt', content = 'sample text file') {
+	const attachment = {
+		id: flow.discord.id(),
+		url: 'https://cdn.discordapp.com/attachments/test?fresh=1',
+		name,
+		size: Buffer.byteLength(content)
+	};
+	const message = {
+		id: flow.discord.id(),
+		channelId: channel.id,
+		channel,
+		author: { id: flow.userId },
+		attachments: new Collection([[attachment.id, attachment]])
+	};
+	channel.messages.store.set(message.id, message);
+	return { message, attachment };
+}
+
+test('attachments are referenced without downloading, then buffered from the refreshed original message', async () => {
 	const flow = await setupFlow();
 	const session = await formService.startSession(flow.form.id, flow.userId, []);
+	const channel = await (await flow.discord.client.users.fetch(flow.userId)).createDM();
+	const { message, attachment } = incomingAttachment(flow, channel);
 	const originalFetch = global.fetch;
-	global.fetch = async () => new Response('sample text file');
+	let fetches = 0;
+	global.fetch = async (url) => {
+		assert.match(String(url), /fresh=2/);
+		fetches++;
+		return new Response('sample text file');
+	};
+
 	try {
-		const stored = await flow.storage.ingest(session.id, [
-			{ url: 'https://cdn.discordapp.com/attachments/test', name: 'example.txt', size: 16 }
-		]);
-		assert.equal(
-			(await readFile(flow.storage.path(stored[0].key))).toString(),
-			'sample text file'
-		);
-		await flow.storage.remove(stored);
-		await assert.rejects(readFile(flow.storage.path(stored[0].key)), { code: 'ENOENT' });
-		await assert.rejects(
-			flow.storage.ingest(session.id, [
-				{ url: 'https://example.com/file', name: 'example.txt', size: 16 }
-			]),
-			/Unsupported attachment source/
-		);
+		const references = await flow.attachments.capture(session.id, message);
+		assert.equal(fetches, 0);
+		attachment.url = 'https://cdn.discordapp.com/attachments/test?fresh=2';
+		const upload = await flow.attachments.buffer(references[0]);
+		assert.equal(fetches, 1);
+		assert.equal(upload.attachment.toString(), 'sample text file');
+		await flow.attachments.remove(references);
+		await assert.rejects(flow.attachments.buffer(references[0]), /original Discord reference/);
 	} finally {
 		global.fetch = originalFetch;
 	}
 });
 
-test('cancelled drafts remove stored attachments during retention cleanup', async () => {
+test('cancelled drafts delete attachment metadata during retention cleanup', async () => {
 	const flow = await setupFlow();
 	const session = await formService.startSession(flow.form.id, flow.userId, []);
-	const originalFetch = global.fetch;
-	global.fetch = async () => new Response('private draft');
-	let attachments;
-	try {
-		attachments = await flow.storage.ingest(session.id, [
-			{ url: 'https://cdn.discordapp.com/attachments/draft', name: 'draft.txt', size: 13 }
-		]);
-	} finally {
-		global.fetch = originalFetch;
-	}
+	const channel = await (await flow.discord.client.users.fetch(flow.userId)).createDM();
+	const { message } = incomingAttachment(flow, channel);
+	const references = await flow.attachments.capture(session.id, message);
 	await formService.navigateSession(session.id, flow.userId, session.version, null, 'cancel');
 	await flow.delivery.cleanup();
-	await assert.rejects(readFile(flow.storage.path(attachments[0].key)), { code: 'ENOENT' });
-	assert.equal((await formService.findSession(session.id)).answers.length, 0);
+	assert.equal(
+		(await database.select().from(schema.files).where(eq(schema.files.key, references[0].key)))
+			.length,
+		0
+	);
 });
 
-test('submission retention removes the private thread and answer copies while preserving policy history', async () => {
+test('submission retention removes the submission thread and answer copies while preserving policy history', async () => {
 	const flow = await setupFlow();
 	const confirmation = await finishAnswers(flow);
 	const submission = await formService.submitSession(
@@ -450,6 +481,7 @@ test('Sapphire discovers the form command, DM listener and all component handler
 			}
 		});
 		assert.equal(commandPayload.name, 'form');
+		assert.equal(commandPayload.default_member_permissions, null);
 		assert.match(commandPayload.description, /Test Forms/);
 		assert.ok(commandPayload.options.some((option) => option.name === 'create'));
 		assert.ok(commandPayload.options.some((option) => option.name === 'archive'));
@@ -489,15 +521,19 @@ test('text, choice, number and attachment answers survive the complete questionn
 	await formService.publishForm(flow.form.id, guildId, reviewerId, editedForm.data.revision);
 	await formService.startSession(flow.form.id, flow.userId, [guildId]);
 	const channel = await (await flow.discord.client.users.fetch(flow.userId)).createDM();
-	const sendAnswer = (content, attachments = new Collection()) =>
-		flow.applicant.handleMessage({
+	const sendAnswer = async (content, attachments = new Collection()) => {
+		const message = {
 			author: { id: flow.userId },
 			id: flow.discord.id(),
+			channelId: channel.id,
 			channel,
 			content,
 			attachments,
 			reference: null
-		});
+		};
+		channel.messages.store.set(message.id, message);
+		await flow.applicant.handleMessage(message);
+	};
 	await flow.delivery.tick();
 	await sendAnswer('I like helping people.');
 	await flow.delivery.tick();
@@ -524,6 +560,7 @@ test('text, choice, number and attachment answers survive the complete questionn
 				[
 					'file',
 					{
+						id: 'file',
 						url: 'https://cdn.discordapp.com/attachments/reference',
 						name: 'reference.txt',
 						size: 21
@@ -545,7 +582,12 @@ test('text, choice, number and attachment answers survive the complete questionn
 		confirmation.version,
 		[guildId]
 	);
-	await flow.delivery.tick();
+	global.fetch = async () => new Response('My reference document');
+	try {
+		await flow.delivery.tick();
+	} finally {
+		global.fetch = originalFetch;
+	}
 	const reviewed = await formService.findSubmission(submission.id);
 	const thread = flow.discord.channels.get(reviewed.threadId);
 	const reviewMessages = [...(await thread.messages.fetch()).values()];
@@ -559,4 +601,45 @@ test('text, choice, number and attachment answers survive the complete questionn
 	);
 	await flow.delivery.tick();
 	assert.equal((await formService.findSubmission(submission.id)).archived, true);
+});
+
+test('a staff reply is delivered separately from deciding the submission', async () => {
+	const flow = await setupFlow();
+	const confirmation = await finishAnswers(flow);
+	const submission = await formService.submitSession(
+		confirmation.id,
+		flow.userId,
+		confirmation.version,
+		[guildId]
+	);
+	await flow.delivery.tick();
+	const delivered = await formService.findSubmission(submission.id);
+	await database
+		.insert(schema.staffGrants)
+		.values({
+			guildId,
+			capability: 'submissions.reply',
+			subjectType: 'user',
+			subjectId: reviewerId
+		})
+		.onConflictDoNothing();
+	await formService.replyToSubmission(
+		submission.id,
+		{ userId: reviewerId, roleIds: [], manageServer: false, administrator: false },
+		delivered.threadId,
+		'Your application has reached the team.'
+	);
+	await flow.delivery.tick();
+	const channel = await (await flow.discord.client.users.fetch(flow.userId)).createDM();
+	assert.match(
+		JSON.stringify([...(await channel.messages.fetch()).values()]),
+		/Your application has reached the team/
+	);
+	assert.match(
+		JSON.stringify([
+			...(await flow.discord.channels.get(delivered.threadId).messages.fetch()).values()
+		]),
+		/Your application has reached the team/
+	);
+	assert.equal((await formService.findSubmission(submission.id)).status, 'pending');
 });

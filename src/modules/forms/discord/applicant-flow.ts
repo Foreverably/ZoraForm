@@ -8,10 +8,8 @@ import {
 	type ButtonInteraction,
 	type StringSelectMenuInteraction
 } from 'discord.js';
-import { eq, desc } from 'drizzle-orm';
-import { submissions } from '../../../database/schema';
 import { FormService } from '../services/form-service';
-import { AttachmentStorage } from '../services/attachment-storage';
+import { AttachmentTransfer } from '../services/attachment-transfer';
 import { FormError } from '../domain/rules';
 import type { QuestionnaireSession } from '../domain/types';
 import { panel, buttons, button, safe, summary } from './components';
@@ -20,7 +18,7 @@ export class ApplicantFlow {
 	public constructor(
 		private readonly client: Client,
 		private readonly formService: FormService,
-		private readonly storage: AttachmentStorage
+		private readonly attachments: AttachmentTransfer
 	) {}
 
 	public async memberRoles(guildId: string, userId: string) {
@@ -161,7 +159,7 @@ export class ApplicantFlow {
 
 		const attachments =
 			question.type === 'attachment'
-				? await this.storage.ingest(session.id, [...message.attachments.values()])
+				? await this.attachments.capture(session.id, message)
 				: [];
 
 		try {
@@ -177,10 +175,10 @@ export class ApplicantFlow {
 			);
 
 			if (!answerSaved) {
-				await this.storage.remove(attachments);
+				await this.attachments.remove(attachments);
 			}
 		} catch (error) {
-			await this.storage.remove(attachments);
+			await this.attachments.remove(attachments);
 			throw error;
 		}
 	}
@@ -194,25 +192,6 @@ export class ApplicantFlow {
 		await interaction.deferReply();
 
 		if (segments[1] === 'directory') {
-			if (segments[2] === 'status') {
-				const recentSubmissions = await this.formService.database
-					.select()
-					.from(submissions)
-					.where(eq(submissions.userId, interaction.user.id))
-					.orderBy(desc(submissions.createdAt))
-					.limit(10);
-				const statuses = recentSubmissions
-					.map(
-						(submission) =>
-							`${safe(submission.snapshot.name)} — ${submission.status}${submission.archived ? ' · archived' : ''}\n${submission.id}`
-					)
-					.join('\n\n');
-				await interaction.editReply(
-					panel(`## Your submissions\n${statuses || 'You have no submissions yet.'}`)
-				);
-				return;
-			}
-
 			if (segments[2] === 'select' && interaction.isStringSelectMenu()) {
 				const formId = interaction.values[0];
 
@@ -286,6 +265,14 @@ export class ApplicantFlow {
 		}
 
 		if (action === 'submit') {
+			for (const answer of session.answers) {
+				if (Array.isArray(answer)) {
+					for (const attachment of answer) {
+						await this.attachments.assertAvailable(attachment);
+					}
+				}
+			}
+
 			const submission = await this.formService.submitSession(
 				session.id,
 				interaction.user.id,
