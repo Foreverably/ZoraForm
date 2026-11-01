@@ -18,7 +18,9 @@ async function browse(interaction: ButtonInteraction | AnySelectMenuInteraction)
 	const runtime = formsRuntime();
 	const segments = interaction.customId.split(':');
 	const kind = segments[2];
-	const ownerId = kind === 'submissions' || kind === 'preview' ? segments[4] : segments[3];
+	const ownerId = ['submissions', 'preview', 'repair', 'recreate'].includes(kind!)
+		? segments[4]
+		: segments[3];
 
 	if (ownerId !== interaction.user.id) {
 		throw new FormError('Open your own browser to use these controls.');
@@ -47,6 +49,29 @@ async function browse(interaction: ButtonInteraction | AnySelectMenuInteraction)
 		await interaction.editReply(
 			await runtime.browsing.forms(guild, ownerId, Number(segments[4]))
 		);
+		return;
+	}
+
+	if (kind === 'read') {
+		await interaction.editReply(
+			await runtime.browsing.submissionForms(guild, ownerId, Number(segments[4]))
+		);
+		return;
+	}
+
+	if (kind === 'readopen') {
+		if (!interaction.isStringSelectMenu()) {
+			throw new FormError('Choose a form from the menu.');
+		}
+
+		await interaction.editReply(
+			await runtime.browsing.submissions(guild, interaction.values[0]!, ownerId)
+		);
+		return;
+	}
+
+	if (kind === 'repair' || kind === 'recreate') {
+		await runtime.recovery.handle(interaction, guild, ownerId, segments);
 		return;
 	}
 

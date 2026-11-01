@@ -483,8 +483,18 @@ test('Sapphire discovers the form command, DM listener and all component handler
 		assert.equal(commandPayload.name, 'form');
 		assert.equal(commandPayload.default_member_permissions, null);
 		assert.match(commandPayload.description, /Test Forms/);
-		assert.ok(commandPayload.options.some((option) => option.name === 'create'));
-		assert.ok(commandPayload.options.some((option) => option.name === 'archive'));
+		assert.deepEqual(commandPayload.options.map((option) => option.name).sort(), [
+			'blacklist',
+			'create',
+			'list',
+			'permission',
+			'submissions'
+		]);
+		assert.ok(
+			commandPayload.options
+				.flatMap((subcommand) => subcommand.options ?? [])
+				.every((option) => !/\bid\b/i.test(`${option.name} ${option.description}`))
+		);
 	} finally {
 		await client.destroy();
 	}
@@ -660,6 +670,8 @@ function managementEditor(flow) {
 		user: { id: reviewerId },
 		message,
 		values,
+		inGuild: () => true,
+		isButton: () => kind === 'button',
 		fields,
 		isModalSubmit: () => kind === 'modal',
 		isFromMessage: () => true,
@@ -1093,8 +1105,162 @@ test('native role and user pickers edit batches without losing existing access e
 			reviewerId
 		])
 	);
-	assert.deepEqual((await formService.findForm(form.id)).data.blacklist, [reviewerId]);
-	assert.deepEqual((await formService.findForm(form.id)).published.allowRoles, []);
+	const blocked = await formService.findForm(form.id);
+	assert.deepEqual(blocked.data.blacklist, [reviewerId]);
+	assert.deepEqual(blocked.published.blacklist, [reviewerId], 'blocks apply without publishing');
+	assert.deepEqual(blocked.published.allowRoles, []);
+	await assert.rejects(
+		editor.builder.handleInteraction(
+			editor.interaction(`${accessPrefix}:blacklist:remove:${saved.data.revision}`, 'user', [
+				reviewerId
+			])
+		),
+		/changed/
+	);
+	await editor.builder.handleInteraction(
+		editor.interaction(`${accessPrefix}:blacklist:remove:${blocked.data.revision}`, 'user', [
+			reviewerId
+		])
+	);
+	assert.deepEqual((await formService.findForm(form.id)).published.blacklist, []);
+});
+
+test('blacklist-only staff can open Access and block users but not change other lists', async () => {
+	const flow = await setupFlow();
+	const editor = managementEditor(flow);
+	const form = await formService.findForm(flow.form.id);
+	const accessPrefix = `zf:access:${form.id}:${reviewerId}`;
+	const blacklistRole = '12345678901234777';
+	await database.insert(schema.staffGrants).values({
+		guildId,
+		capability: 'forms.blacklist',
+		subjectType: 'role',
+		subjectId: blacklistRole
+	});
+	const blacklistOnly = (interaction) => ({
+		...interaction,
+		guild: {
+			...interaction.guild,
+			members: {
+				fetch: async ({ user }) => ({
+					id: user,
+					roles: { cache: new Collection([[blacklistRole, {}]]) },
+					permissions: { has: () => false }
+				})
+			}
+		}
+	});
+	await editor.builder.handleInteraction(
+		blacklistOnly(editor.interaction(`zf:m:${form.id}:${reviewerId}:access`))
+	);
+	await editor.builder.handleInteraction(
+		blacklistOnly(editor.interaction(`${accessPrefix}:blacklist:open`))
+	);
+	await editor.builder.handleInteraction(
+		blacklistOnly(
+			editor.interaction(`${accessPrefix}:blacklist:add:${form.data.revision}`, 'user', [
+				reviewerId
+			])
+		)
+	);
+	const { data } = await formService.findForm(form.id);
+	assert.deepEqual(data.blacklist, [reviewerId]);
+	await assert.rejects(
+		editor.builder.handleInteraction(
+			blacklistOnly(
+				editor.interaction(`${accessPrefix}:allowRoles:add:${data.revision}`, 'role', [
+					blacklistRole
+				])
+			)
+		),
+		/forms\.edit/
+	);
+	await database
+		.delete(schema.staffGrants)
+		.where(eq(schema.staffGrants.subjectId, blacklistRole));
+});
+
+test('form panels replace ID commands for submissions and delivery recovery', async () => {
+	const { createRuntime } = require('../dist/modules/forms/runtime');
+	const { routeFormInteraction } = require('../dist/modules/forms/discord/interaction-router');
+	const { SubmissionRecovery } = require('../dist/modules/forms/discord/submission-recovery');
+	const { FormBrowsing } = require('../dist/modules/forms/discord/browsing');
+	const { StaffPermissions } = require('../dist/modules/forms/services/staff-permissions');
+	const flow = await setupFlow();
+	const editor = managementEditor(flow);
+	const permissions = new StaffPermissions(database);
+	const browsing = new FormBrowsing(formService, permissions, flow.discord.client);
+	const runtime = createRuntime(flow.discord.client, 'postgres://unused@127.0.0.1:1/unused');
+	Object.assign(runtime, {
+		formService,
+		permissions,
+		browsing,
+		delivery: flow.delivery,
+		rateLimits: { enforce: async () => undefined },
+		recovery: new SubmissionRecovery(formService, flow.delivery, permissions, browsing)
+	});
+
+	try {
+		const panelText = () => JSON.stringify(componentTree(editor.message.payload));
+		const route = (...interactionArguments) =>
+			routeFormInteraction(editor.interaction(...interactionArguments));
+		const confirmation = await finishAnswers(flow);
+		const submission = await formService.submitSession(
+			confirmation.id,
+			flow.userId,
+			confirmation.version,
+			[guildId]
+		);
+		await flow.delivery.tick();
+		assert.equal((await formService.findSubmission(submission.id)).deliveryState, 'ready');
+
+		await editor.builder.handleInteraction(
+			editor.interaction(`zf:m:${flow.form.id}:${reviewerId}:back`)
+		);
+		assert.doesNotMatch(panelText(), /Form ID/);
+		await route(controlId(editor.message.payload, 'Submissions'));
+		assert.match(panelText(), new RegExp(`<@${flow.userId}>`));
+		await route(controlId(editor.message.payload, 'Other forms'));
+		assert.match(panelText(), /Choose a form to browse/);
+		await route(`zf:b:readopen:${reviewerId}`, 'string', [flow.form.id]);
+		assert.match(panelText(), /Recover a failed delivery/);
+
+		const repairId = `zf:b:repair:${flow.form.id}:${reviewerId}:0`;
+		const staleThreadId = (await formService.findSubmission(submission.id)).threadId;
+		flow.discord.reviewThreads.clear();
+		await route(repairId, 'string', [submission.id]);
+		assert.match(panelText(), /Create replacement thread/);
+		await route(controlId(editor.message.payload, 'Create replacement thread'));
+		assert.match(panelText(), /Delivery recovery is queued/);
+		await flow.delivery.tick();
+		const recovered = await formService.findSubmission(submission.id);
+		assert.equal(recovered.deliveryState, 'ready');
+		assert.notEqual(recovered.threadId, staleThreadId);
+
+		await route(repairId, 'string', [submission.id]);
+		assert.match(panelText(), /Delivery recovery is queued/);
+
+		await assert.rejects(
+			new SubmissionRecovery(formService, flow.delivery, permissions, browsing).handle(
+				editor.interaction(repairId, 'string', [submission.id]),
+				{
+					...editor.interaction(repairId).guild,
+					members: {
+						fetch: async ({ user }) => ({
+							id: user,
+							roles: { cache: new Collection() },
+							permissions: { has: () => false }
+						})
+					}
+				},
+				reviewerId,
+				repairId.split(':')
+			),
+			/submissions\.repair/
+		);
+	} finally {
+		await runtime.connection.close();
+	}
 });
 
 test('staff review uses a native channel picker and saves into the same panel', async () => {

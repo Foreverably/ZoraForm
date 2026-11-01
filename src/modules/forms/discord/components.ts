@@ -168,7 +168,7 @@ export function managePanel(form: FormRecord, actorId: string) {
 	const description = form.data.description ? `\n${safe(form.data.description)}\n` : '';
 
 	return panel(
-		`## ${safe(form.data.name)}\n-# ${status} · Revision ${form.data.revision} · ${questionCount} ${questionCount === 1 ? 'question' : 'questions'}\n${description}\n### Questions\n${questions}\n\n-# Changes stay in the draft until you publish.\n-# Form ID: \`${form.id}\``,
+		`## ${safe(form.data.name)}\n-# ${status} · Revision ${form.data.revision} · ${questionCount} ${questionCount === 1 ? 'question' : 'questions'}\n${description}\n### Questions\n${questions}\n\n-# Changes stay in the draft until you publish.`,
 		[
 			buttons(
 				button(controlId('add'), 'Add question', ButtonStyle.Primary),
@@ -186,7 +186,10 @@ export function managePanel(form: FormRecord, actorId: string) {
 				button(controlId('review'), 'Review channel')
 			),
 			buttons(
-				button(`zf:b:forms:${actorId}:0`, 'All forms'),
+				button(`zf:b:submissions:${form.id}:${actorId}:0`, 'Submissions'),
+				button(`zf:b:forms:${actorId}:0`, 'All forms')
+			),
+			buttons(
 				button(controlId('publish'), 'Publish', ButtonStyle.Success),
 				button(controlId('archive'), 'Archive', ButtonStyle.Danger)
 			)

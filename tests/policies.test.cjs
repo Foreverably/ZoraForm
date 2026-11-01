@@ -129,12 +129,12 @@ test('server and form blacklists accept both users and roles and override allow 
 	await formService.setRoleBlacklist(guildId, actorId, staffRoleId, true);
 	await assert.rejects(formService.startSession(form.id, userId, [staffRoleId]), /not available/);
 	await formService.setRoleBlacklist(guildId, actorId, staffRoleId, false);
-	await formService.setFormBlacklist(form.id, guildId, actorId, 'role', staffRoleId, true);
+	await formService.setFormBlacklist(form.id, guildId, actorId, 'role', [staffRoleId], true);
 	await assert.rejects(formService.startSession(form.id, userId, [staffRoleId]), /not available/);
-	await formService.setFormBlacklist(form.id, guildId, actorId, 'role', staffRoleId, false);
-	await formService.setFormBlacklist(form.id, guildId, actorId, 'user', userId, true);
+	await formService.setFormBlacklist(form.id, guildId, actorId, 'role', [staffRoleId], false);
+	await formService.setFormBlacklist(form.id, guildId, actorId, 'user', [userId], true);
 	await assert.rejects(formService.startSession(form.id, userId, [staffRoleId]), /not available/);
-	await formService.setFormBlacklist(form.id, guildId, actorId, 'user', userId, false);
+	await formService.setFormBlacklist(form.id, guildId, actorId, 'user', [userId], false);
 	assert.ok(await formService.startSession(form.id, userId, [staffRoleId]));
 });
 
@@ -188,6 +188,7 @@ test('staff form browsing reaches every page and the final form can be selected'
 		);
 		for (const option of select?.components[0].options ?? []) seen.add(option.value);
 	}
+	assert.doesNotMatch(text(await browser.forms(context.guild, actorId)), /ID:/);
 	const allForms = await formService.listForms(guildId);
 	assert.equal(seen.size, allForms.length);
 	assert.deepEqual(pagination(NaN, 35), { page: 0, pages: 4, offset: 0 });
@@ -221,7 +222,20 @@ test('submission browsing is paginated and reading depends on channel access rat
 	const lastPage = await browser.submissions(context.guild, form.id, actorId, 2);
 	assert.match(text(lastPage), /Page 3 of 3/);
 	assert.match(text(await browser.applicantSubmissions(actorId, 2)), /Page 3 of 3/);
+	assert.doesNotMatch(text(lastPage), /zf:b:repair/);
+	assert.match(text(lastPage), new RegExp(`<@${actorId}>`));
+	await permissions.configure(guildId, manager, 'submissions.repair', 'role', staffRoleId, true);
+	assert.match(
+		text(await browser.submissions(context.guild, form.id, actorId, 2)),
+		/zf:b:repair/
+	);
+	await permissions.configure(guildId, manager, 'submissions.repair', 'role', staffRoleId, false);
+	assert.match(text(await browser.submissionForms(context.guild, actorId)), /zf:b:readopen/);
 	context.hide();
+	assert.match(
+		text(await browser.submissionForms(context.guild, actorId)),
+		/No forms send submissions/
+	);
 	await assert.rejects(
 		browser.submissions(context.guild, form.id, actorId),
 		/access to the submission channel/

@@ -17,6 +17,10 @@ const accessCategories = {
 
 type AccessCategory = keyof typeof accessCategories;
 
+export function blacklistSubject(category: string | undefined) {
+	return category === 'blacklist' ? 'user' : category === 'denyRoles' ? 'role' : null;
+}
+
 function accessCategory(value: string): AccessCategory {
 	if (!Object.hasOwn(accessCategories, value)) {
 		throw new FormError('Choose a supported access setting.');
@@ -40,7 +44,7 @@ export function accessPanel(form: FormRecord, actorId: string, requestedCategory
 				: category === 'requiredRoles'
 					? 'Applicants need every role in this list.'
 					: 'Anyone matching this list is blocked from applying.';
-		description = `### ${accessCategories[category]}\n${explanation}\n-# ${identifiers.length} ${noun} configured. Select up to 25 at a time to add or remove.\n-# Changes stay in the draft until you publish.`;
+		description = `### ${accessCategories[category]}\n${explanation}\n-# ${identifiers.length} ${noun} configured. Select up to 25 at a time to add or remove.\n-# ${blacklistSubject(category) ? 'Blacklist changes apply immediately, including to the published form.' : 'Changes stay in the draft until you publish.'}`;
 
 		for (const operation of ['add', 'remove'] as const) {
 			const selector =
@@ -74,19 +78,9 @@ export function accessPanel(form: FormRecord, actorId: string, requestedCategory
 	return panel(`## ${safe(form.data.name)} — Applicant access\n\n${description}`, controls);
 }
 
-export function updateAccessList(
-	configuration: FormConfiguration,
-	interaction: AnySelectMenuInteraction,
-	segments: string[]
-): FormConfiguration {
+export function readAccessChange(interaction: AnySelectMenuInteraction, segments: string[]) {
 	const category = accessCategory(segments[4]!);
 	const operation = segments[5];
-
-	if (configuration.revision !== Number(segments[6])) {
-		throw new FormError(
-			'This access list changed. Reopen Access before making another change.'
-		);
-	}
 
 	if (
 		category === 'blacklist' ? !interaction.isUserSelectMenu() : !interaction.isRoleSelectMenu()
@@ -98,11 +92,29 @@ export function updateAccessList(
 		throw new FormError('Choose whether to add or remove entries.');
 	}
 
-	const selectedIdentifiers = new Set(interaction.values);
-	const identifiers =
-		operation === 'add'
-			? [...new Set([...configuration[category], ...selectedIdentifiers])]
-			: configuration[category].filter((identifier) => !selectedIdentifiers.has(identifier));
+	return {
+		category,
+		adding: operation === 'add',
+		selected: interaction.values,
+		revision: Number(segments[6])
+	};
+}
+
+export function updateAccessList(
+	configuration: FormConfiguration,
+	change: ReturnType<typeof readAccessChange>
+): FormConfiguration {
+	const { category, adding, selected, revision } = change;
+
+	if (configuration.revision !== revision) {
+		throw new FormError(
+			'This access list changed. Reopen Access before making another change.'
+		);
+	}
+
+	const identifiers = adding
+		? [...new Set([...configuration[category], ...selected])]
+		: configuration[category].filter((identifier) => !selected.includes(identifier));
 
 	if (identifiers.length > 100) {
 		throw new FormError(

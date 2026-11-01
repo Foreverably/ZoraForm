@@ -5,7 +5,8 @@ import {
 	StringSelectMenuBuilder,
 	PermissionFlagsBits,
 	type Client,
-	type Guild
+	type Guild,
+	type GuildMember
 } from 'discord.js';
 import { forms, submissions } from '../../../database/schema';
 import { FormService } from '../services/form-service';
@@ -22,6 +23,10 @@ export function pagination(requestedPage: number, total: number, size = pageSize
 		? Math.max(0, Math.min(requestedPage, pages - 1))
 		: 0;
 	return { page, pages, offset: page * size };
+}
+
+function formStatus(form: Pick<FormRecord, 'archived' | 'published'>) {
+	return form.archived ? 'Archived' : form.published ? 'Published' : 'Draft';
 }
 
 function navigation(prefix: string, page: number, pages: number) {
@@ -59,18 +64,23 @@ export class FormBrowsing {
 			throw new FormError('This form belongs to another server.');
 		}
 
-		const channel = await this.client.channels.fetch(form.data.reviewChannelId);
 		const member = await guild.members.fetch({ user: actorId, force: true });
 
-		if (
-			!channel ||
-			!('permissionsFor' in channel) ||
-			!channel.permissionsFor(member)?.has(PermissionFlagsBits.ViewChannel)
-		) {
+		if (!(await this.canReadChannel(form.data.reviewChannelId, member))) {
 			throw new FormError(
 				'You need access to the submission channel to browse its submissions.'
 			);
 		}
+	}
+
+	private async canReadChannel(channelId: string, member: GuildMember) {
+		const channel = await this.client.channels.fetch(channelId).catch(() => null);
+
+		return Boolean(
+			channel &&
+			'permissionsFor' in channel &&
+			channel.permissionsFor(member)?.has(PermissionFlagsBits.ViewChannel)
+		);
 	}
 
 	public async forms(guild: Guild, actorId: string, requestedPage = 0) {
@@ -90,9 +100,9 @@ export class FormBrowsing {
 		const description = records
 			.map(
 				(form, index) =>
-					`${offset + index + 1}. **${safe(form.data.name)}** · \`${form.archived ? 'Archived' : form.published ? 'Published' : 'Draft'}\`\n   ID: \`${form.id}\``
+					`${offset + index + 1}. **${safe(form.data.name)}** · \`${formStatus(form)}\``
 			)
-			.join('\n\n');
+			.join('\n');
 		const controls = navigation(`zf:b:forms:${actorId}`, page, pages);
 		const footer = `-# ${totals?.total ?? 0} ${(totals?.total ?? 0) === 1 ? 'form' : 'forms'}${pages > 1 ? ` · Page ${page + 1} of ${pages}` : ''}`;
 
@@ -113,7 +123,51 @@ export class FormBrowsing {
 		);
 	}
 
-	public async submissions(guild: Guild, formId: string, actorId: string, requestedPage = 0) {
+	public async submissionForms(guild: Guild, actorId: string, requestedPage = 0) {
+		const member = await guild.members.fetch({ user: actorId, force: true });
+		const readableForms = [];
+
+		for (const form of await this.formService.listForms(guild.id)) {
+			if (await this.canReadChannel(form.data.reviewChannelId, member)) {
+				readableForms.push(form);
+			}
+		}
+
+		const { page, pages, offset } = pagination(requestedPage, readableForms.length);
+		const records = readableForms.slice(offset, offset + pageSize);
+		const controls = navigation(`zf:b:read:${actorId}`, page, pages);
+
+		if (!records.length) {
+			return panel(
+				'## Submissions\nNo forms send submissions to a channel you can read.',
+				controls
+			);
+		}
+
+		const description = records
+			.map(
+				(form, index) =>
+					`${offset + index + 1}. **${safe(form.data.name)}** · \`${formStatus(form)}\``
+			)
+			.join('\n');
+		const menu = new StringSelectMenuBuilder()
+			.setCustomId(`zf:b:readopen:${actorId}`)
+			.setPlaceholder('Choose a form')
+			.addOptions(records.map((form) => ({ label: form.data.name, value: form.id })));
+
+		return panel(
+			`## Submissions\nChoose a form to browse its submissions.\n\n${description}${pages > 1 ? `\n\n-# Page ${page + 1} of ${pages}` : ''}`,
+			[new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu), ...controls]
+		);
+	}
+
+	public async submissions(
+		guild: Guild,
+		formId: string,
+		actorId: string,
+		requestedPage = 0,
+		notice?: string
+	) {
 		const form = await this.formService.findForm(formId);
 		await this.assertChannelReader(form, guild, actorId);
 		const filter = and(eq(submissions.formId, formId), eq(submissions.guildId, guild.id));
@@ -131,13 +185,48 @@ export class FormBrowsing {
 			.offset(offset);
 		const description = records
 			.map(
-				(submission) =>
-					`- \`${submission.id}\`\n  **${submission.status}** · ${submission.archived ? 'archived' : 'open'} · delivery: \`${submission.deliveryState}\`${submission.threadId ? ` · <#${submission.threadId}>` : ''}`
+				(submission, index) =>
+					`${offset + index + 1}. <@${submission.userId}> · **${submission.status}** · <t:${Math.floor(submission.createdAt.getTime() / 1000)}:R>\n   ${submission.archived ? 'archived' : 'open'} · delivery: \`${submission.deliveryState}\`${submission.threadId ? ` · <#${submission.threadId}>` : ''}`
 			)
 			.join('\n\n');
+		const identity = await this.permissions.identify(guild, actorId);
+		const recoverable = (await this.permissions.allowed(
+			guild.id,
+			'submissions.repair',
+			identity
+		))
+			? records.flatMap((submission, index) =>
+					submission.status === 'pending'
+						? [
+								{
+									label: `${offset + index + 1}. ${submission.createdAt.toISOString().slice(0, 10)} · delivery: ${submission.deliveryState}`,
+									value: submission.id
+								}
+							]
+						: []
+				)
+			: [];
+		const canEdit = await this.permissions.allowed(guild.id, 'forms.edit', identity);
+
 		return panel(
-			`## ${safe(form.data.name)} submissions\n${description || 'No submissions yet.'}${pages > 1 ? `\n\n-# Page ${page + 1} of ${pages}` : ''}`,
-			navigation(`zf:b:submissions:${form.id}:${actorId}`, page, pages)
+			`## ${safe(form.data.name)} submissions\n${notice ? `${notice}\n\n` : ''}${description || 'No submissions yet.'}${pages > 1 ? `\n\n-# Page ${page + 1} of ${pages}` : ''}`,
+			[
+				...(recoverable.length
+					? [
+							new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+								new StringSelectMenuBuilder()
+									.setCustomId(`zf:b:repair:${form.id}:${actorId}:${page}`)
+									.setPlaceholder('Recover a failed delivery')
+									.addOptions(recoverable)
+							)
+						]
+					: []),
+				...navigation(`zf:b:submissions:${form.id}:${actorId}`, page, pages),
+				buttons(
+					button(`zf:b:read:${actorId}:0`, 'Other forms'),
+					...(canEdit ? [button(`zf:m:${form.id}:${actorId}:back`, 'Back to form')] : [])
+				)
+			]
 		);
 	}
 

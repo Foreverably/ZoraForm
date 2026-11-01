@@ -42,35 +42,13 @@ export class FormCommand extends Command {
 				)
 				.addSubcommand((subcommand) =>
 					subcommand
-						.setName('manage')
-						.setDescription('Open the form builder')
-						.addStringOption((option) =>
-							option
-								.setName('id')
-								.setDescription('Form ID from /form list')
-								.setRequired(true)
-						)
-				)
-				.addSubcommand((subcommand) =>
-					subcommand
-						.setName('archive')
-						.setDescription('Archive a form and stop new submissions')
-						.addStringOption((option) =>
-							option.setName('id').setDescription('Form ID').setRequired(true)
-						)
-				)
-				.addSubcommand((subcommand) =>
-					subcommand
 						.setName('submissions')
-						.setDescription('Browse submissions from a channel you can read')
-						.addStringOption((option) =>
-							option.setName('id').setDescription('Form ID').setRequired(true)
-						)
+						.setDescription('Browse submissions from channels you can read')
 				)
 				.addSubcommand((subcommand) =>
 					subcommand
 						.setName('blacklist')
-						.setDescription('Block or unblock a user or role')
+						.setDescription('Block or unblock a user or role across this server')
 						.addBooleanOption((option) =>
 							option
 								.setName('blocked')
@@ -86,11 +64,6 @@ export class FormCommand extends Command {
 							option
 								.setName('role')
 								.setDescription('Role to block; choose either a user or a role')
-						)
-						.addStringOption((option) =>
-							option
-								.setName('form')
-								.setDescription('Optional form ID; omit to apply server-wide')
 						)
 				)
 				.addSubcommand((subcommand) =>
@@ -120,24 +93,6 @@ export class FormCommand extends Command {
 						)
 						.addRoleOption((option) =>
 							option.setName('role').setDescription('Role receiving the grant')
-						)
-				)
-				.addSubcommand((subcommand) =>
-					subcommand
-						.setName('repair')
-						.setDescription('Recover a failed submission delivery')
-						.addStringOption((option) =>
-							option
-								.setName('submission')
-								.setDescription('Submission ID')
-								.setRequired(true)
-						)
-						.addBooleanOption((option) =>
-							option
-								.setName('recreate')
-								.setDescription(
-									'Allow a replacement after checking the thread is missing'
-								)
 						)
 				)
 		);
@@ -201,19 +156,9 @@ export class FormCommand extends Command {
 				}
 
 				await runtime.permissions.assertAllowed(guild.id, 'forms.blacklist', identity);
-				const formId = interaction.options.getString('form');
 				const blocked = interaction.options.getBoolean('blocked', true);
 
-				if (formId) {
-					await runtime.formService.setFormBlacklist(
-						formId,
-						guild.id,
-						identity.userId,
-						subjectType,
-						subjectId,
-						blocked
-					);
-				} else if (role) {
+				if (role) {
 					await runtime.formService.setRoleBlacklist(
 						guild.id,
 						identity.userId,
@@ -229,7 +174,7 @@ export class FormCommand extends Command {
 					);
 				}
 
-				await interaction.editReply(`${formId ? 'Form' : 'Server'} blacklist updated.`);
+				await interaction.editReply('Server blacklist updated.');
 				return;
 			}
 
@@ -248,44 +193,9 @@ export class FormCommand extends Command {
 				return;
 			}
 
-			if (action === 'repair') {
-				await runtime.permissions.assertAllowed(guild.id, 'submissions.repair', identity);
-				await runtime.delivery.repairReview(
-					interaction.options.getString('submission', true),
-					guild.id,
-					identity.userId,
-					interaction.options.getBoolean('recreate') ?? false
-				);
-				await interaction.editReply('Submission delivery has been queued for recovery.');
-				return;
-			}
-
-			const form = await runtime.formService.findForm(
-				interaction.options.getString('id', true)
+			await interaction.editReply(
+				await runtime.browsing.submissionForms(guild, identity.userId)
 			);
-
-			if (form.guildId !== guild.id) {
-				throw new FormError('This form belongs to another server.');
-			}
-
-			if (action === 'archive') {
-				await runtime.permissions.assertAllowed(guild.id, 'forms.archive', identity);
-				await runtime.formService.archiveForm(form.id, guild.id, identity.userId);
-				await interaction.editReply(
-					'Form archived. It is no longer available in the DM directory.'
-				);
-				return;
-			}
-
-			if (action === 'submissions') {
-				await interaction.editReply(
-					await runtime.browsing.submissions(guild, form.id, identity.userId)
-				);
-				return;
-			}
-
-			await runtime.browsing.assertManagement(guild, identity.userId);
-			await interaction.editReply(managePanel(form, identity.userId));
 		} catch (error) {
 			await interaction.editReply(explainFormError(error));
 		}

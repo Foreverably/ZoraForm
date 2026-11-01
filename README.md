@@ -55,18 +55,18 @@ Replacing files, removing them, or removing their question retires the old messa
 
 Publishing fails if a reference file is no longer available. If one disappears after publishing, applicants still receive the question, with a notice in place of the missing file. Temporary download failures retry instead of sending the question without its files.
 
-Use Access for allowed roles, required roles, blacklisted roles, and blocked users. Searchable role and user menus add or remove up to 25 entries per selection without replacing the rest of a list (up to 100 entries per list). Denials take precedence: any blacklisted role blocks access, all required roles must be present, and at least one allowed role must be present when an allow-list is configured. An empty allow-list imposes no role restriction.
+Use Access for allowed roles, required roles, blacklisted roles, and blocked users on one form. Searchable role and user menus add or remove up to 25 entries per selection without replacing the rest of a list (up to 100 entries per list). Blacklist changes need `forms.blacklist` and apply immediately, including to the published form; allowed and required roles stay in the draft until Publish. Denials take precedence: any blacklisted role blocks access, all required roles must be present, and at least one allowed role must be present when an allow-list is configured. An empty allow-list imposes no role restriction.
 
-Use `/form blacklist` to apply immediate user or role restrictions. Omit `form` for server-wide restrictions, or supply a form ID for a restriction on that form alone:
+Use `/form blacklist` to block a user or role from every form in the server:
 
 ```text
 /form blacklist blocked:true role:@Restricted
-/form blacklist blocked:true user:@Applicant form:<form ID>
+/form blacklist blocked:false user:@Applicant
 ```
 
-Submission policies configure lifetime and pending limits plus a cooldown. Zero disables a particular limit. Submitted answers are retained for 1–365 days, with 30 days as the default. Ordinary question, access-panel, and policy edits stay in the draft until Publish; the blacklist command takes effect immediately.
+Submission policies configure lifetime and pending limits plus a cooldown. Zero disables a particular limit. Submitted answers are retained for 1–365 days, with 30 days as the default. Question, allowed-role, required-role, and policy edits stay in the draft until Publish; blacklists take effect immediately.
 
-Publishing validates the submission channel, the bot's permissions, question configuration, and role references. `/form list` opens a paginated browser with a form selector. `/form manage` reopens a management panel. Previews include every question and choice, with pagination for long content.
+Publishing validates the submission channel, the bot's permissions, question configuration, and role references. `/form list` opens a paginated browser where selecting a form opens its management panel, which holds every form action including Publish, Archive, and Submissions. Previews include every question and choice, with pagination for long content.
 
 ## Channel visibility and staff actions
 
@@ -76,7 +76,7 @@ The bot needs View Channel, Send Messages, Create Public Threads, Send Messages 
 
 Reading a thread does not grant permission to act on the submission. Accept and Reject require `submissions.decide`; Reply requires `submissions.reply`. Reply queues a DM to the applicant and records a copy in the submission thread without changing the decision. Final decisions queue the applicant notification and lock and archive the thread. Failed applicant DMs do not undo a saved decision or block archival. There is no Claim or Request Information workflow.
 
-`/form submissions` paginates all submissions for a form and checks the invoking member's channel access. `/form repair` reconciles existing threads before retrying. Explicit `recreate:true` is required to create a replacement when an administrator has checked that the original thread is missing.
+`/form submissions` lists the forms whose submission channel the member can read, then paginates each form's submissions; staff can also reach them from a form's management panel. Members with `submissions.repair` get a recovery menu for pending submissions, which reconciles existing threads before retrying. If no thread is found, a replacement is only created after confirming through a separate button.
 
 ## Applicant DMs and attachment transfer
 

@@ -239,8 +239,9 @@ export class FormService {
 		guildId: string,
 		actorId: string,
 		subjectType: 'user' | 'role',
-		subjectId: string,
-		blocked: boolean
+		subjectIds: readonly string[],
+		blocked: boolean,
+		expectedRevision?: number
 	) {
 		await this.database.transaction(async (database) => {
 			const [form] = await database
@@ -253,18 +254,31 @@ export class FormService {
 				throw new FormError('Form not found in this server.');
 			}
 
+			if (expectedRevision !== undefined && form.data.revision !== expectedRevision) {
+				throw new FormError(
+					'This access list changed. Reopen Access before making another change.'
+				);
+			}
+
 			const field = subjectType === 'user' ? 'blacklist' : 'denyRoles';
 			const updateList = (identifiers: string[]) =>
 				blocked
-					? [...new Set([...identifiers, subjectId])]
-					: identifiers.filter((identifier) => identifier !== subjectId);
+					? [...new Set([...identifiers, ...subjectIds])]
+					: identifiers.filter((identifier) => !subjectIds.includes(identifier));
+			const draftList = updateList(form.data[field]);
+
+			if (draftList.length > 100) {
+				throw new FormError(
+					'Each access list supports up to 100 entries. Remove some entries first.'
+				);
+			}
 
 			await database
 				.update(forms)
 				.set({
 					data: {
 						...form.data,
-						[field]: updateList(form.data[field]),
+						[field]: draftList,
 						revision: form.data.revision + 1
 					},
 					published: form.published

@@ -21,7 +21,7 @@ import { DiscordDelivery } from './delivery-worker';
 import { formQuestionSchema, discordSnowflakeSchema } from '../domain/schemas';
 import { FormError } from '../domain/rules';
 import type { FormConfiguration } from '../domain/types';
-import { accessPanel, updateAccessList } from './access-panel';
+import { accessPanel, blacklistSubject, readAccessChange, updateAccessList } from './access-panel';
 import { managePanel, panel, buttons, button } from './components';
 
 type BuilderInteraction = ButtonInteraction | AnySelectMenuInteraction | ModalSubmitInteraction;
@@ -81,14 +81,25 @@ export class FormBuilder {
 				? 'forms.publish'
 				: requestedAction === 'archive'
 					? 'forms.archive'
-					: 'forms.edit';
-		await this.permissions.assertAllowed(guild.id, capability, identity);
+					: segments[1] === 'access' && blacklistSubject(segments[4])
+						? 'forms.blacklist'
+						: 'forms.edit';
+		const isNavigation =
+			segments[1] === 'access'
+				? segments[5] === 'open'
+				: segments[1] === 'm' && (segments[4] === 'back' || segments[4] === 'access');
+
+		if (isNavigation) {
+			await this.browsing.assertManagement(guild, interaction.user.id);
+		} else {
+			await this.permissions.assertAllowed(guild.id, capability, identity);
+		}
 
 		const formId = segments[2]!;
 		const panelOwnerId = segments[3];
 
 		if (panelOwnerId !== interaction.user.id) {
-			throw new FormError('Open your own panel with /form manage.');
+			throw new FormError('Open your own panel with /form list.');
 		}
 
 		const form = await this.formService.findForm(formId);
@@ -130,12 +141,27 @@ export class FormBuilder {
 					throw new FormError('Use the user or role selector.');
 				}
 
-				await this.formService.editFormDraft(
-					formId,
-					guild.id,
-					interaction.user.id,
-					(configuration) => updateAccessList(configuration, interaction, segments)
-				);
+				const change = readAccessChange(interaction, segments);
+				const subject = blacklistSubject(change.category);
+
+				if (subject) {
+					await this.formService.setFormBlacklist(
+						formId,
+						guild.id,
+						interaction.user.id,
+						subject,
+						change.selected,
+						change.adding,
+						change.revision
+					);
+				} else {
+					await this.formService.editFormDraft(
+						formId,
+						guild.id,
+						interaction.user.id,
+						(configuration) => updateAccessList(configuration, change)
+					);
+				}
 			}
 
 			await interaction.editReply(
@@ -162,7 +188,7 @@ export class FormBuilder {
 			const question = form.data.questions[questionIndex];
 
 			if (!question || form.data.revision !== revision) {
-				throw new FormError('The question list changed. Reopen /form manage.');
+				throw new FormError('The question list changed. Reopen the form from /form list.');
 			}
 
 			await interaction.deferUpdate();
@@ -370,7 +396,7 @@ export class FormBuilder {
 	private assertRevision(configuration: FormConfiguration, revision: number) {
 		if (configuration.revision !== revision) {
 			throw new FormError(
-				'The draft changed while this panel was open. Reopen /form manage.'
+				'The draft changed while this panel was open. Reopen the form from /form list.'
 			);
 		}
 	}

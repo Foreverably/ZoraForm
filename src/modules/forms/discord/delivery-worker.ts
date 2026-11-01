@@ -17,6 +17,8 @@ import { FormError } from '../domain/rules';
 import type { FormConfiguration, DeliveryJob } from '../domain/types';
 import { panel, prompt, buttons, button, answerPages, safe } from './components';
 
+export class MissingReviewThreadError extends FormError {}
+
 export class DiscordDelivery {
 	private interval: NodeJS.Timeout | undefined;
 	private running = false;
@@ -251,7 +253,7 @@ export class DiscordDelivery {
 		if (!thread) {
 			if (submission.deliveryState !== 'queued') {
 				throw new FormError(
-					'The result of thread creation is uncertain. Use the repair command after checking the staff channel.'
+					'The result of thread creation is uncertain. Recover it from the Submissions panel after checking the staff channel.'
 				);
 			}
 
@@ -496,8 +498,8 @@ export class DiscordDelivery {
 		const discoveredThread = await this.findReviewThread(channel, submission.id);
 
 		if (!discoveredThread && !allowRecreate) {
-			throw new FormError(
-				'No matching thread was found. Check the staff channel, then use recreate:true to create a replacement.'
+			throw new MissingReviewThreadError(
+				'No matching thread was found. Check the submission channel, then create a replacement if the thread is really gone.'
 			);
 		}
 

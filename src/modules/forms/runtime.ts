@@ -8,6 +8,7 @@ import { RateLimits } from './services/rate-limits';
 import { DiscordDelivery } from './discord/delivery-worker';
 import { ApplicantFlow } from './discord/applicant-flow';
 import { FormBuilder } from './discord/form-builder';
+import { SubmissionRecovery } from './discord/submission-recovery';
 import { FormError } from './domain/rules';
 
 let activeRuntime: ReturnType<typeof createRuntime> | undefined;
@@ -22,6 +23,7 @@ export function createRuntime(client: Client, connectionString: string) {
 	const applicants = new ApplicantFlow(client, formService, attachments);
 	const browsing = new FormBrowsing(formService, permissions, client);
 	const builder = new FormBuilder(formService, delivery, permissions, browsing);
+	const recovery = new SubmissionRecovery(formService, delivery, permissions, browsing);
 	const runtime = {
 		connection,
 		formService,
@@ -31,7 +33,8 @@ export function createRuntime(client: Client, connectionString: string) {
 		browsing,
 		delivery,
 		applicants,
-		builder
+		builder,
+		recovery
 	};
 	activeRuntime = runtime;
 	return runtime;
