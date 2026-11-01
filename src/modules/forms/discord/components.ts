@@ -31,22 +31,11 @@ export const buttons = (...items: ButtonBuilder[]) =>
 
 export function panel(text: string, rows: Row[] = []) {
 	const container = new ContainerBuilder();
-	const paragraphs = text.split(/\n\s*\n/).filter(Boolean);
-	const sections = [...paragraphs.slice(0, 5), paragraphs.slice(5).join('\n\n')].filter(Boolean);
-
-	for (const [sectionIndex, section] of sections.entries()) {
-		if (sectionIndex > 0) {
-			container.addSeparatorComponents(
-				new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Small)
-			);
-		}
-
-		container.addTextDisplayComponents(new TextDisplayBuilder().setContent(section));
-	}
+	container.addTextDisplayComponents(new TextDisplayBuilder().setContent(text));
 
 	if (rows.length) {
 		container.addSeparatorComponents(
-			new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Large)
+			new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Small)
 		);
 		container.addActionRowComponents(...rows.map((row) => row.toJSON()));
 	}
@@ -87,19 +76,23 @@ export function summary(session: QuestionnaireSession, requestedPage = 0, reques
 		button(`${prefix}:edit:${page}`, 'Edit answer')
 	);
 	return panel(
-		`## ${safe(session.snapshot.name)}\nReview answer ${page + 1} of ${session.snapshot.questions.length}\n### ${safe(question.prompt)}\n${pages[answerPage]}\nAnswer part ${answerPage + 1} of ${pages.length}\n\nSubmit when you are satisfied with your answers.`,
+		`## ${safe(session.snapshot.name)}\n-# Review answer ${page + 1} of ${session.snapshot.questions.length}\n\n### ${safe(question.prompt)}\n${pages[answerPage]}${pages.length > 1 ? `\n-# Answer part ${answerPage + 1} of ${pages.length}` : ''}\n\nSubmit when you are satisfied with your answers.`,
 		[
 			nav,
-			buttons(
-				button(
-					`${prefix}:summary:${page}:${answerPage - 1}`,
-					'Earlier answer text'
-				).setDisabled(answerPage === 0),
-				button(
-					`${prefix}:summary:${page}:${answerPage + 1}`,
-					'More answer text'
-				).setDisabled(answerPage === pages.length - 1)
-			),
+			...(pages.length > 1
+				? [
+						buttons(
+							button(
+								`${prefix}:summary:${page}:${answerPage - 1}`,
+								'Earlier text'
+							).setDisabled(answerPage === 0),
+							button(
+								`${prefix}:summary:${page}:${answerPage + 1}`,
+								'More text'
+							).setDisabled(answerPage === pages.length - 1)
+						)
+					]
+				: []),
 			buttons(
 				button(`${prefix}:submit`, 'Submit', ButtonStyle.Success),
 				button(`${prefix}:pause`, 'Pause'),
@@ -147,46 +140,54 @@ export function prompt(session: QuestionnaireSession) {
 	rows.push(
 		buttons(
 			button(`${prefix}:back`, 'Back').setDisabled(session.position === 0),
-			button(`${prefix}:skip`, 'Skip').setDisabled(question.required),
+			button(`${prefix}:skip`, 'Skip').setDisabled(question.required)
+		),
+		buttons(
 			button(`${prefix}:pause`, 'Pause'),
 			button(`${prefix}:cancel`, 'Cancel', ButtonStyle.Danger)
 		)
 	);
 	return panel(
-		`## ${safe(session.snapshot.name)}\nQuestion ${session.position + 1} of ${session.snapshot.questions.length}\n### ${safe(question.prompt)}\n${hint}\n\nProgress is saved for seven days. Submitted answers and files are retained for ${session.snapshot.retentionDays} days for staff review.\n-# zf-prompt:${session.id}:${session.version}`,
+		`## ${safe(session.snapshot.name)}\n-# Question ${session.position + 1} of ${session.snapshot.questions.length}\n\n### ${safe(question.prompt)}\n${hint}\n\n-# Progress is saved for seven days. Submitted answers and files are retained for ${session.snapshot.retentionDays} days for staff review.\n-# zf-prompt:${session.id}:${session.version}`,
 		rows
 	);
 }
 
-export function managePanel(form: FormRecord, actor: string) {
-	const id = (action: string) => `zf:m:${form.id}:${actor}:${action}`;
+export function managePanel(form: FormRecord, actorId: string) {
+	const controlId = (action: string) => `zf:m:${form.id}:${actorId}:${action}`;
+	const questionCount = form.data.questions.length;
+	const status = form.archived ? 'Archived' : form.published ? 'Published' : 'Draft';
 	const questions =
 		form.data.questions
 			.map(
 				(question, questionIndex) =>
-					`${questionIndex + 1}. ${safe(question.prompt.slice(0, 30))} (${question.type})`
+					`${questionIndex + 1}. ${safe(question.prompt.slice(0, 40))}${question.prompt.length > 40 ? '…' : ''} · \`${question.type}\``
 			)
-			.join('\n') || 'No questions yet.';
+			.join('\n') || '*No questions yet. Add your first question below.*';
+	const description = form.data.description ? `\n${safe(form.data.description)}\n` : '';
+
 	return panel(
-		`## ${safe(form.data.name)}\n${safe(form.data.description)}\nForm ID: ${form.id}\n${form.archived ? 'Archived' : form.published ? 'Published' : 'Draft'} · draft revision ${form.data.revision}\n\n${questions}\n\nEdits stay in the draft until you publish.`,
+		`## ${safe(form.data.name)}\n-# ${status} · Revision ${form.data.revision} · ${questionCount} ${questionCount === 1 ? 'question' : 'questions'}\n${description}\n### Questions\n${questions}\n\n-# Changes stay in the draft until you publish.\n-# Form ID: \`${form.id}\``,
 		[
 			buttons(
-				button(id('add'), 'Add question'),
-				button(id('edit'), 'Edit question'),
-				button(id('remove'), 'Remove question'),
-				button(id('order'), 'Reorder')
+				button(controlId('add'), 'Add question', ButtonStyle.Primary),
+				button(controlId('edit'), 'Edit').setDisabled(questionCount === 0),
+				button(controlId('remove'), 'Remove').setDisabled(questionCount === 0)
 			),
 			buttons(
-				button(id('details'), 'Name & description'),
-				button(id('access'), 'Access'),
-				button(id('policy'), 'Submission policy'),
-				button(id('review'), 'Staff review')
+				button(controlId('order'), 'Reorder').setDisabled(questionCount < 2),
+				button(controlId('details'), 'Details'),
+				button(controlId('preview'), 'Preview')
 			),
 			buttons(
-				button(id('preview'), 'Preview'),
-				button(id('publish'), 'Publish', ButtonStyle.Success),
-				button(id('archive'), 'Archive', ButtonStyle.Danger),
-				button(`zf:b:forms:${actor}:0`, 'All forms')
+				button(controlId('access'), 'Access'),
+				button(controlId('policy'), 'Limits'),
+				button(controlId('review'), 'Review channel')
+			),
+			buttons(
+				button(`zf:b:forms:${actorId}:0`, 'All forms'),
+				button(controlId('publish'), 'Publish', ButtonStyle.Success),
+				button(controlId('archive'), 'Archive', ButtonStyle.Danger)
 			)
 		]
 	);

@@ -9,8 +9,8 @@ import type { FormConfiguration, FormRecord } from '../domain/types';
 import { button, buttons, panel, safe, type Row } from './components';
 
 const accessCategories = {
-	allowRoles: 'Allowed roles (any)',
-	requiredRoles: 'Required roles (all)',
+	allowRoles: 'Allowed roles',
+	requiredRoles: 'Required roles',
 	denyRoles: 'Blacklisted roles',
 	blacklist: 'Blacklisted users'
 } as const;
@@ -34,7 +34,13 @@ export function accessPanel(form: FormRecord, actorId: string, requestedCategory
 		const category = accessCategory(requestedCategory);
 		const identifiers = form.data[category];
 		const noun = category === 'blacklist' ? 'users' : 'roles';
-		description = `### ${accessCategories[category]}\n${identifiers.length} ${noun} configured. Select up to 25 at a time to add or remove.\nChanges are saved to the draft until you publish.`;
+		const explanation =
+			category === 'allowRoles'
+				? 'Applicants need any one of these roles. An empty list allows everyone.'
+				: category === 'requiredRoles'
+					? 'Applicants need every role in this list.'
+					: 'Anyone matching this list is blocked from applying.';
+		description = `### ${accessCategories[category]}\n${explanation}\n-# ${identifiers.length} ${noun} configured. Select up to 25 at a time to add or remove.\n-# Changes stay in the draft until you publish.`;
 
 		for (const operation of ['add', 'remove'] as const) {
 			const selector =
@@ -58,15 +64,11 @@ export function accessPanel(form: FormRecord, actorId: string, requestedCategory
 		}
 	}
 
-	controls.push(
-		buttons(
-			...Object.entries(accessCategories).map(([category, label]) =>
-				button(`${prefix}:${category}:open`, label).setDisabled(
-					category === requestedCategory
-				)
-			)
-		)
+	const categoryButtons = Object.entries(accessCategories).map(([category, label]) =>
+		button(`${prefix}:${category}:open`, label).setDisabled(category === requestedCategory)
 	);
+	controls.push(buttons(...categoryButtons.slice(0, 2)), buttons(...categoryButtons.slice(2)));
+
 	controls.push(buttons(button(`zf:m:${form.id}:${actorId}:back`, 'Back to form')));
 
 	return panel(`## ${safe(form.data.name)} — Applicant access\n\n${description}`, controls);

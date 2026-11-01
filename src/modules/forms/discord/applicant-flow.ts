@@ -93,17 +93,26 @@ export class ApplicantFlow {
 			);
 		}
 
+		if (pageCount > 1) {
+			controls.push(
+				buttons(
+					button(`zf:directory:page:${page - 1}`, 'Previous').setDisabled(page === 0),
+					button(`zf:directory:page:${page + 1}`, 'Next').setDisabled(
+						page === pageCount - 1
+					)
+				)
+			);
+		}
+
 		controls.push(
 			buttons(
-				button(`zf:directory:page:${page - 1}`, 'Previous').setDisabled(page === 0),
-				button(`zf:directory:page:${page + 1}`, 'Next').setDisabled(page === pageCount - 1),
 				button(`zf:directory:page:${page}`, 'Refresh'),
 				button('zf:directory:status', 'My submissions')
 			)
 		);
 
 		return panel(
-			`## ${safe(getBotName())}\n${pageForms.length ? 'Choose a form to begin. Each answer is saved automatically.' : 'There are no forms available to you right now. Try Refresh later.'}\nPage ${page + 1} of ${pageCount}`,
+			`## ${safe(getBotName())}\n${pageForms.length ? 'Choose a form to begin. Each answer is saved automatically.' : 'There are no forms available to you right now. Try Refresh later.'}${pageCount > 1 ? `\n\n-# Page ${page + 1} of ${pageCount}` : ''}`,
 			controls
 		);
 	}

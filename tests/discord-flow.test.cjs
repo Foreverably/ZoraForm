@@ -824,8 +824,12 @@ test('access controls reject other owners and revoked permissions before updatin
 });
 
 test('panel separators stay within Discord component limits even for paragraph-heavy answers', () => {
-	const { panel } = require('../dist/modules/forms/discord/components');
-	const payload = componentTree(panel(Array.from({ length: 300 }, () => 'a').join('\n\n')));
+	const { panel, buttons, button } = require('../dist/modules/forms/discord/components');
+	const payload = componentTree(
+		panel(Array.from({ length: 300 }, () => 'a').join('\n\n'), [
+			buttons(button('test:back', 'Back'))
+		])
+	);
 	const contents = payload[0].components;
 	assert.ok(contents.some((component) => component.type === 14 && component.divider));
 	assert.ok(contents.length < 40);
