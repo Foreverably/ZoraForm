@@ -8,6 +8,13 @@
       "when": 1793534828910,
       "tag": "0000_breezy_lady_mastermind",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1793537723741,
+      "tag": "0001_staff_access_and_discord_attachments",
+      "breakpoints": true
     }
   ]
 }

@@ -131,6 +131,9 @@ export const auditEvents = pgTable('audit_events', {
 
 export const files = pgTable('files', {
 	key: text().primaryKey(),
+	sourceChannelId: text('source_channel_id'),
+	sourceMessageId: text('source_message_id'),
+	sourceAttachmentId: text('source_attachment_id'),
 	sessionId: uuid('session_id')
 		.notNull()
 		.references(() => sessions.id),
@@ -139,4 +142,51 @@ export const files = pgTable('files', {
 	expiresAt: timestamp('expires_at', { withTimezone: true })
 		.notNull()
 		.$defaultFn(() => new Date(Date.now() + 7 * 86400000))
+});
+
+export const staffGrants = pgTable(
+	'staff_grants',
+	{
+		guildId: text('guild_id').notNull(),
+		capability: text()
+			.$type<import('../modules/forms/domain/permissions').StaffCapability>()
+			.notNull(),
+		subjectType: text('subject_type').$type<'user' | 'role'>().notNull(),
+		subjectId: text('subject_id').notNull()
+	},
+	(table) => [
+		primaryKey({
+			columns: [table.guildId, table.capability, table.subjectType, table.subjectId]
+		})
+	]
+);
+
+export const roleBlacklist = pgTable(
+	'role_blacklist',
+	{
+		guildId: text('guild_id').notNull(),
+		roleId: text('role_id').notNull()
+	},
+	(table) => [primaryKey({ columns: [table.guildId, table.roleId] })]
+);
+
+export const rateLimitBuckets = pgTable('rate_limit_buckets', {
+	key: text().primaryKey(),
+	windowStartedAt: timestamp('window_started_at', { withTimezone: true }).notNull(),
+	hits: integer().notNull().default(0),
+	notified: boolean().notNull().default(false)
+});
+
+export const submissionReplies = pgTable('submission_replies', {
+	sourceInteractionId: text('source_interaction_id').unique(),
+	id: uuid()
+		.primaryKey()
+		.$defaultFn(() => crypto.randomUUID()),
+	submissionId: uuid('submission_id')
+		.notNull()
+		.references(() => submissions.id),
+	actorId: text('actor_id').notNull(),
+	content: text().notNull(),
+	createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+	deliveredAt: timestamp('delivered_at', { withTimezone: true })
 });
