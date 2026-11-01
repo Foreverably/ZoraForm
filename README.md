@@ -43,7 +43,7 @@ Exactly one user or role must be selected. Grants are server-specific and checke
 
 ## Create forms
 
-Run `/form create` with a name and submission channel, then use the interactive builder to add, edit, remove, reorder, and preview questions. Text, numbers, single-choice answers, and attachments are supported. Choosing a question opens its editor, where each setting changes on its own: wording, required or optional, answer limits, and answer choices. Number questions accept any number and have no limits unless staff set a lowest or highest value.
+Run `/form create` with a name and submission channel, then use the interactive builder to add, edit, remove, reorder, and preview questions. Text, numbers, single-choice answers, and attachments are supported. Choosing a question opens its editor, where each setting changes on its own: wording, required or optional, answer limits, and answer choices. Number questions accept any number and have no limits unless staff set a lowest or highest value. The bot numbers questions itself, so a number typed at the start of the wording, such as `2. How old are you?`, is hidden when the question is shown.
 
 The builder updates one message as you navigate, save a modal, or return with Back. Modals use Discord Label components. Staff review provides a native text-channel picker.
 
@@ -70,7 +70,7 @@ Publishing validates the submission channel, the bot's permissions, question con
 
 ## Channel visibility and staff actions
 
-The configured channel's Discord permissions determine who can read submissions. The bot creates one channel-visible public thread per submission; it does not maintain an invitation list or a separate reader role list. Here, public means visible to members who can view the parent channel. Configure a staff-only parent channel in Discord when submissions should be restricted to staff.
+The configured channel's Discord permissions determine who can read submissions. For each submission the bot posts an applicant card in that channel, with the applicant's avatar, banner, names, ID, account age, server join date, and roles, then starts a thread from it named `username - form name`. It does not maintain an invitation list or a separate reader role list. Threads are public, meaning visible to members who can view the parent channel, so configure a staff-only parent channel in Discord when submissions should be restricted to staff.
 
 The bot needs View Channel, Send Messages, Create Public Threads, Send Messages in Threads, Read Message History, Manage Threads, and Attach Files in the submission channel.
 
@@ -92,7 +92,7 @@ Up to three files are accepted per attachment question, up to 8 MiB per file and
 
 PostgreSQL-backed rate limits are shared across workers and survive restarts. Per user, each ten-second window permits eight DM messages, fifteen component interactions, and six form commands, with a combined ceiling of twenty requests. Repeated blocked DM requests do not generate repeated warning messages. These limits are separate from per-form submission limits and cooldowns.
 
-Retention removes saved answer content, source attachment metadata, staff replies, and the associated submission thread. Minimal submission history remains to enforce lifetime limits. Cancellation and draft expiry clean up saved progress and attachment references while the bot runs. The bot does not delete applicants' original DM messages.
+Retention removes saved answer content, source attachment metadata, staff replies, the applicant card, and the associated submission thread. Minimal submission history remains to enforce lifetime limits. Cancellation and draft expiry clean up saved progress and attachment references while the bot runs. The bot does not delete applicants' original DM messages.
 
 ## Database and development
 

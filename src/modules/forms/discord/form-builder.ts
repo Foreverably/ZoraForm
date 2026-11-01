@@ -22,7 +22,7 @@ import { formQuestionSchema, discordSnowflakeSchema } from '../domain/schemas';
 import { FormError } from '../domain/rules';
 import type { FormConfiguration } from '../domain/types';
 import { accessPanel, blacklistSubject, readAccessChange, updateAccessList } from './access-panel';
-import { managePanel, panel, buttons, button } from './components';
+import { managePanel, panel, buttons, button, withoutNumbering } from './components';
 
 type BuilderInteraction = ButtonInteraction | AnySelectMenuInteraction | ModalSubmitInteraction;
 interface ModalField {
@@ -347,7 +347,10 @@ export class FormBuilder {
 							.setPlaceholder('Choose a question')
 							.addOptions(
 								form.data.questions.map((question, index) => ({
-									label: `${index + 1}. ${question.prompt}`.slice(0, 100),
+									label: `${index + 1}. ${withoutNumbering(question.prompt)}`.slice(
+										0,
+										100
+									),
 									value: String(index)
 								}))
 							)

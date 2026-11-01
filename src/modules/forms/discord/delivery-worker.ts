@@ -1,6 +1,12 @@
 import { QuestionMedia } from '../services/question-media';
 import { getBotName } from '../../../lib/environment';
-import { ChannelType, PermissionFlagsBits, type Client, type TextChannel } from 'discord.js';
+import {
+	ChannelType,
+	PermissionFlagsBits,
+	type Client,
+	type Message,
+	type TextChannel
+} from 'discord.js';
 import { and, eq, lte, inArray, ne } from 'drizzle-orm';
 import {
 	jobs,
@@ -15,7 +21,20 @@ import { FormService } from '../services/form-service';
 import { AttachmentTransfer } from '../services/attachment-transfer';
 import { FormError } from '../domain/rules';
 import type { FormConfiguration, DeliveryJob } from '../domain/types';
-import { panel, prompt, buttons, button, answerPages, safe } from './components';
+import { applicantCard, reviewThreadName } from './applicant-card';
+import {
+	panel,
+	prompt,
+	buttons,
+	button,
+	answerPages,
+	safe,
+	hiddenMarker,
+	markPanel,
+	questionHeading
+} from './components';
+
+type SubmissionRecord = typeof submissions.$inferSelect;
 
 export class MissingReviewThreadError extends FormError {}
 
@@ -130,7 +149,7 @@ export class DiscordDelivery {
 			case 'prompt':
 				return this.deliverPrompt(deliveryJob);
 			case 'review':
-				return this.deliverReview(deliveryJob.payload.id);
+				return this.deliverReview(deliveryJob.payload.id, deliveryJob.id);
 			case 'receipt':
 				return this.deliverDecision(deliveryJob.payload.id);
 			case 'close':
@@ -153,26 +172,14 @@ export class DiscordDelivery {
 
 		const applicant = await this.client.users.fetch(session.userId);
 		const directMessages = await applicant.createDM();
-		const marker = `zf-prompt:${session.id}:${session.version}`;
+		const marker = `prompt:${session.id}:${session.version}`;
 		const recentMessages = await directMessages.messages.fetch({ limit: 100 });
-		let questionMessage = recentMessages.find(
-			(message) =>
-				message.author.id === this.client.user?.id &&
-				JSON.stringify(message.components).includes(marker)
-		);
+		let questionMessage = recentMessages.find((message) => this.isMarked(message, marker));
 
 		if (!questionMessage) {
-			const content = prompt(session);
-
-			if (session.position >= session.snapshot.questions.length) {
-				content.components[0]!.addTextDisplayComponents((display) =>
-					display.setContent(`-# ${marker}`)
-				);
-			}
-
 			questionMessage = await directMessages.send(
 				await this.questionMedia.decorate(
-					content,
+					markPanel(prompt(session), marker),
 					session.snapshot.questions[session.position]
 				)
 			);
@@ -193,48 +200,81 @@ export class DiscordDelivery {
 			);
 	}
 
-	private async findReviewThread(channel: TextChannel, submissionId: string) {
-		const threadName = `submission-${submissionId}`;
-		const activeThreads = await channel.threads.fetchActive();
-		const activeMatch = activeThreads.threads.find((thread) => thread.name === threadName);
+	private isMarked(message: Message, key: string) {
+		const marker = hiddenMarker(key);
 
-		if (activeMatch) {
-			return activeMatch;
+		return (
+			message.author.id === this.client.user?.id &&
+			message.components.some((component) => component.id === marker)
+		);
+	}
+
+	// A thread started from a message shares that message's id.
+	private async findReviewThread(submission: {
+		threadId: string | null;
+		reviewMessageId: string | null;
+	}) {
+		const threadId = submission.threadId ?? submission.reviewMessageId;
+
+		if (!threadId) {
+			return null;
 		}
 
-		let archiveCursor: Date | undefined;
-
-		for (let archivePage = 0; archivePage < 100; archivePage++) {
-			const archivedThreads = await channel.threads.fetchArchived({
-				type: 'public',
-				limit: 100,
-				...(archiveCursor ? { before: archiveCursor } : {})
-			});
-			const archivedMatch = archivedThreads.threads.find(
-				(thread) => thread.name === threadName
-			);
-
-			if (archivedMatch) {
-				return archivedMatch;
-			}
-
-			if (!archivedThreads.hasMore) {
+		try {
+			return await this.client.channels.fetch(threadId);
+		} catch (error) {
+			if (typeof error === 'object' && error && 'code' in error && error.code === 10003) {
 				return null;
 			}
 
-			const oldestThread = archivedThreads.threads.last();
-
-			if (!oldestThread?.archiveTimestamp) {
-				throw new FormError('Could not reconcile archived review threads.');
-			}
-
-			archiveCursor = new Date(oldestThread.archiveTimestamp);
+			throw error;
 		}
-
-		throw new FormError('Review archive reconciliation needs administrator attention.');
 	}
 
-	private async deliverReview(submissionId: string) {
+	private async postApplicantCard(
+		channel: TextChannel,
+		submission: SubmissionRecord,
+		deliveryId: string
+	) {
+		const user = await this.client.users.fetch(submission.userId, { force: true });
+		const member = await channel.guild.members
+			.fetch({ user: submission.userId, force: true })
+			.catch((error) => {
+				if (typeof error === 'object' && error && 'code' in error && error.code === 10007) {
+					return null;
+				}
+
+				throw error;
+			});
+		let card = submission.reviewMessageId
+			? await channel.messages.fetch(submission.reviewMessageId).catch(() => null)
+			: null;
+
+		if (!card) {
+			await this.formService.database
+				.update(submissions)
+				.set({ deliveryState: 'creating' })
+				.where(eq(submissions.id, submission.id));
+			// Discord returns the existing message when a retry repeats this nonce shortly after.
+			// Recovery queues a new delivery, so a replacement card gets a new nonce.
+			card = await channel.send({
+				...applicantCard(user, member, submission.snapshot.name),
+				nonce: deliveryId.replaceAll('-', '').slice(0, 25),
+				enforceNonce: true
+			});
+			await this.formService.database
+				.update(submissions)
+				.set({ reviewMessageId: card.id })
+				.where(eq(submissions.id, submission.id));
+		}
+
+		return card.startThread({
+			name: reviewThreadName(user, submission.snapshot.name),
+			autoArchiveDuration: 1440
+		});
+	}
+
+	private async deliverReview(submissionId: string, deliveryId: string) {
 		const submission = await this.formService.findSubmission(submissionId);
 
 		if (
@@ -246,27 +286,9 @@ export class DiscordDelivery {
 		}
 
 		const channel = await this.validateReviewChannel(submission.guildId, submission.snapshot);
-		let thread = submission.threadId
-			? await this.client.channels.fetch(submission.threadId)
-			: await this.findReviewThread(channel, submission.id);
-
-		if (!thread) {
-			if (submission.deliveryState !== 'queued') {
-				throw new FormError(
-					'The result of thread creation is uncertain. Recover it from the Submissions panel after checking the staff channel.'
-				);
-			}
-
-			await this.formService.database
-				.update(submissions)
-				.set({ deliveryState: 'creating' })
-				.where(eq(submissions.id, submission.id));
-			thread = await channel.threads.create({
-				name: `submission-${submission.id}`,
-				type: ChannelType.PublicThread,
-				autoArchiveDuration: 1440
-			});
-		}
+		const thread =
+			(await this.findReviewThread(submission)) ??
+			(await this.postApplicantCard(channel, submission, deliveryId));
 
 		if (thread.type !== ChannelType.PublicThread || thread.parentId !== channel.id) {
 			throw new FormError(
@@ -285,11 +307,7 @@ export class DiscordDelivery {
 
 		const existingMessages = await thread.messages.fetch({ limit: 100 });
 		const hasPart = (marker: string) =>
-			existingMessages.some(
-				(message) =>
-					message.author.id === this.client.user?.id &&
-					JSON.stringify(message.components).includes(marker)
-			);
+			existingMessages.some((message) => this.isMarked(message, marker));
 
 		for (
 			let questionIndex = 0;
@@ -299,15 +317,20 @@ export class DiscordDelivery {
 			const question = submission.snapshot.questions[questionIndex]!;
 			const answer = submission.answers[questionIndex];
 
-			for (const [answerPage, answerText] of answerPages(answer).entries()) {
-				const marker = `zf-review:${submission.id}:${questionIndex}:${answerPage}`;
+			const pages = answerPages(answer);
+
+			for (const [answerPage, answerText] of pages.entries()) {
+				const marker = `review:${submission.id}:${questionIndex}:${answerPage}`;
 
 				if (hasPart(marker)) {
 					continue;
 				}
 
-				const content = panel(
-					`## ${safe(submission.snapshot.name)}\nApplicant: ${submission.userId}\nQuestion ${questionIndex + 1} of ${submission.snapshot.questions.length}\n### ${safe(question.prompt)}\n${answerText}\n-# ${marker}`
+				const content = markPanel(
+					panel(
+						`-# Question ${questionIndex + 1} of ${submission.snapshot.questions.length}${pages.length > 1 ? ` · Part ${answerPage + 1} of ${pages.length}` : ''}\n${questionHeading(question.prompt)}\n${answerText}`
+					),
+					marker
 				);
 
 				if (Array.isArray(answer) && answerPage === 0) {
@@ -329,19 +352,22 @@ export class DiscordDelivery {
 			}
 		}
 
-		const controlsMarker = `zf-review-controls:${submission.id}`;
+		const controlsMarker = `review-controls:${submission.id}`;
 
 		if (!hasPart(controlsMarker)) {
 			await thread.send(
-				panel(
-					`Submission ${submission.id}\nOne authorized reviewer can make the final decision.\n-# ${controlsMarker}`,
-					[
-						buttons(
-							button(`zf:r:${submission.id}:accepted`, 'Accept'),
-							button(`zf:r:${submission.id}:rejected`, 'Reject'),
-							button(`zf:r:${submission.id}:reply`, 'Reply')
-						)
-					]
+				markPanel(
+					panel(
+						`One authorized reviewer can make the final decision.\n-# Submission ID: \`${submission.id}\``,
+						[
+							buttons(
+								button(`zf:r:${submission.id}:accepted`, 'Accept'),
+								button(`zf:r:${submission.id}:rejected`, 'Reject'),
+								button(`zf:r:${submission.id}:reply`, 'Reply')
+							)
+						]
+					),
+					controlsMarker
 				)
 			);
 		}
@@ -356,19 +382,16 @@ export class DiscordDelivery {
 		const submission = await this.formService.findSubmission(submissionId);
 		const applicant = await this.client.users.fetch(submission.userId);
 		const channel = await applicant.createDM();
-		const marker = `zf-decision:${submission.id}`;
+		const marker = `decision:${submission.id}`;
 		const recentMessages = await channel.messages.fetch({ limit: 100 });
 
-		if (
-			!recentMessages.some(
-				(message) =>
-					message.author.id === this.client.user?.id &&
-					JSON.stringify(message.components).includes(marker)
-			)
-		) {
+		if (!recentMessages.some((message) => this.isMarked(message, marker))) {
 			await channel.send(
-				panel(
-					`## ${safe(submission.snapshot.name)}\nYour submission was ${submission.status}.\n${safe(submission.reason ?? '')}\n-# ${marker}`
+				markPanel(
+					panel(
+						`## ${safe(submission.snapshot.name)}\nYour submission was ${submission.status}.\n${safe(submission.reason ?? '')}`
+					),
+					marker
 				)
 			);
 		}
@@ -400,19 +423,14 @@ export class DiscordDelivery {
 					await thread.setArchived(false);
 				}
 
-				const marker = `zf-reply-log:${reply.id}`;
+				const marker = `reply-log:${reply.id}`;
 				const threadMessages = await thread.messages.fetch({ limit: 100 });
 
-				if (
-					!threadMessages.some(
-						(message) =>
-							message.author.id === this.client.user?.id &&
-							JSON.stringify(message.components).includes(marker)
-					)
-				) {
+				if (!threadMessages.some((message) => this.isMarked(message, marker))) {
 					await thread.send(
-						panel(
-							`Staff reply by ${reply.actorId}\n${safe(reply.content)}\n-# ${marker}`
+						markPanel(
+							panel(`Staff reply by <@${reply.actorId}>\n${safe(reply.content)}`),
+							marker
 						)
 					);
 				}
@@ -430,19 +448,16 @@ export class DiscordDelivery {
 		}
 
 		const channel = await (await this.client.users.fetch(submission.userId)).createDM();
-		const marker = `zf-reply:${reply.id}`;
+		const marker = `reply:${reply.id}`;
 		const messages = await channel.messages.fetch({ limit: 100 });
 
-		if (
-			!messages.some(
-				(message) =>
-					message.author.id === this.client.user?.id &&
-					JSON.stringify(message.components).includes(marker)
-			)
-		) {
+		if (!messages.some((message) => this.isMarked(message, marker))) {
 			await channel.send(
-				panel(
-					`## Staff reply: ${safe(submission.snapshot.name)}\nSubmission ${submission.id}\n${safe(reply.content)}\n-# ${marker}`
+				markPanel(
+					panel(
+						`## Staff reply: ${safe(submission.snapshot.name)}\n${safe(reply.content)}`
+					),
+					marker
 				)
 			);
 		}
@@ -494,12 +509,19 @@ export class DiscordDelivery {
 			throw new FormError('Choose a pending submission from this server.');
 		}
 
-		const channel = await this.validateReviewChannel(guildId, submission.snapshot);
-		const discoveredThread = await this.findReviewThread(channel, submission.id);
+		await this.validateReviewChannel(guildId, submission.snapshot);
+		const discoveredThread = await this.findReviewThread(submission);
 
 		if (!discoveredThread && !allowRecreate) {
 			throw new MissingReviewThreadError(
 				'No matching thread was found. Check the submission channel, then create a replacement if the thread is really gone.'
+			);
+		}
+
+		if (!discoveredThread && submission.reviewMessageId) {
+			await this.questionMedia.deleteMessage(
+				submission.snapshot.reviewChannelId,
+				submission.reviewMessageId
 			);
 		}
 
@@ -508,6 +530,7 @@ export class DiscordDelivery {
 				.update(submissions)
 				.set({
 					threadId: discoveredThread?.id ?? null,
+					reviewMessageId: discoveredThread ? submission.reviewMessageId : null,
 					deliveryState: discoveredThread ? 'posting' : 'queued'
 				})
 				.where(eq(submissions.id, submission.id));
@@ -562,12 +585,20 @@ export class DiscordDelivery {
 				}
 			}
 
+			if (submission.reviewMessageId) {
+				await this.questionMedia.deleteMessage(
+					submission.snapshot.reviewChannelId,
+					submission.reviewMessageId
+				);
+			}
+
 			await this.formService.database.transaction(async (database) => {
 				await database
 					.update(submissions)
 					.set({
 						answers: [],
 						snapshot: { ...submission.snapshot, questions: [] },
+						reviewMessageId: null,
 						deliveryState: 'purged',
 						status: submission.status === 'pending' ? 'rejected' : submission.status,
 						archived: true

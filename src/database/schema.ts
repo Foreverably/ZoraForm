@@ -90,6 +90,7 @@ export const submissions = pgTable(
 		answers: jsonb().$type<QuestionAnswer[]>().notNull(),
 		status: text().$type<'pending' | 'accepted' | 'rejected'>().notNull().default('pending'),
 		threadId: text('thread_id').unique(),
+		reviewMessageId: text('review_message_id'),
 		reviewerId: text('reviewer_id'),
 		reason: text(),
 		archived: boolean().notNull().default(false),

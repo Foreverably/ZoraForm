@@ -42,7 +42,10 @@ function mockDiscord() {
 	const directMessages = new Map();
 	const reviewThreads = new Collection();
 	const operations = [];
+	const reviewMessages = new Collection();
+	const sentNonces = new Map();
 	let loseCreationResponse = false;
+	let loseCardResponse = false;
 	const id = () => String(++nextId);
 	const messageChannel = () => {
 		const messages = new Collection();
@@ -78,7 +81,16 @@ function mockDiscord() {
 			fetchMe: async () => ({ id: 'bot' }),
 			fetch: async ({ user }) => ({
 				id: user,
-				roles: { cache: new Collection([[guildId, {}]]) },
+				guild: { id: guildId },
+				displayName: 'Server Name',
+				nickname: 'Server Name',
+				joinedTimestamp: 1700000000000,
+				roles: {
+					cache: new Collection([
+						[guildId, { position: 0 }],
+						['12345678901234111', { position: 1 }]
+					])
+				},
 				permissions: { has: () => true }
 			})
 		}
@@ -92,40 +104,63 @@ function mockDiscord() {
 			has: (permissions) =>
 				!(member.id === guildId && permissions === PermissionFlagsBits.ViewChannel)
 		}),
-		threads: {
-			fetchActive: async () => ({ threads: reviewThreads }),
-			fetchArchived: async () => ({ threads: new Collection(), hasMore: false }),
-			create: async (configuration) => {
-				operations.push('create-thread');
-				const thread = {
-					...messageChannel(),
-					id: id(),
-					name: configuration.name,
-					type: ChannelType.PublicThread,
-					parentId: reviewChannelId,
-					archived: false,
-					locked: false,
-					members: { add: async (memberId) => operations.push(`invite:${memberId}`) },
-					setArchived: async function (value) {
-						this.archived = value;
-					},
-					setLocked: async function (value) {
-						this.locked = value;
-					},
-					delete: async function () {
-						channels.delete(this.id);
-						reviewThreads.delete(this.id);
-					}
-				};
-				assert.equal(configuration.type, ChannelType.PublicThread);
-				reviewThreads.set(thread.id, thread);
-				channels.set(thread.id, thread);
-				if (loseCreationResponse) {
-					loseCreationResponse = false;
-					throw new Error('Simulated lost response after Discord created the thread');
+		messages: {
+			fetch: async (messageId) => {
+				if (!reviewMessages.has(messageId)) {
+					throw Object.assign(new Error('Unknown Message'), { code: 10008 });
 				}
-				return thread;
+				return reviewMessages.get(messageId);
+			},
+			delete: async (messageId) => reviewMessages.delete(messageId)
+		},
+		send: async (payload) => {
+			if (payload.enforceNonce && sentNonces.has(payload.nonce)) {
+				return sentNonces.get(payload.nonce);
 			}
+			const messageId = id();
+			const card = {
+				id: messageId,
+				author: { id: 'bot' },
+				components: payload.components.map((component) => component.toJSON()),
+				startThread: async (configuration) => {
+					operations.push('create-thread');
+					const thread = {
+						...messageChannel(),
+						id: messageId,
+						name: configuration.name,
+						type: ChannelType.PublicThread,
+						parentId: reviewChannelId,
+						archived: false,
+						locked: false,
+						members: { add: async (memberId) => operations.push(`invite:${memberId}`) },
+						setArchived: async function (value) {
+							this.archived = value;
+						},
+						setLocked: async function (value) {
+							this.locked = value;
+						},
+						delete: async function () {
+							channels.delete(this.id);
+							reviewThreads.delete(this.id);
+						}
+					};
+					reviewThreads.set(thread.id, thread);
+					channels.set(thread.id, thread);
+					if (loseCreationResponse) {
+						loseCreationResponse = false;
+						throw new Error('Simulated lost response after Discord created the thread');
+					}
+					return thread;
+				}
+			};
+			operations.push('post-card');
+			reviewMessages.set(messageId, card);
+			sentNonces.set(payload.nonce, card);
+			if (loseCardResponse) {
+				loseCardResponse = false;
+				throw new Error('Simulated lost response after Discord posted the card');
+			}
+			return card;
 		}
 	};
 	channels.set(reviewChannelId, reviewChannel);
@@ -136,6 +171,14 @@ function mockDiscord() {
 		channels: { fetch: async (channelId) => channels.get(channelId) ?? null },
 		users: {
 			fetch: async (userId) => ({
+				id: userId,
+				username: 'tester',
+				globalName: 'Test User',
+				displayName: 'Test User',
+				accentColor: 0x123456,
+				createdTimestamp: 1600000000000,
+				bannerURL: () => 'https://cdn.discordapp.com/banners/1/banner.png',
+				displayAvatarURL: () => 'https://cdn.discordapp.com/avatars/1/avatar.png',
 				createDM: async () => {
 					if (!directMessages.has(userId)) directMessages.set(userId, messageChannel());
 					return directMessages.get(userId);
@@ -149,9 +192,13 @@ function mockDiscord() {
 		operations,
 		channels,
 		reviewThreads,
+		reviewMessages,
 		directMessages,
 		loseNextCreationResponse: () => {
 			loseCreationResponse = true;
+		},
+		loseNextCardResponse: () => {
+			loseCardResponse = true;
 		}
 	};
 }
@@ -234,9 +281,59 @@ test('first DM opens eligible forms, then submission reaches a channel-visible r
 	assert.equal(delivered.deliveryState, 'ready');
 	const thread = flow.discord.channels.get(delivered.threadId);
 	assert.equal(thread.type, ChannelType.PublicThread);
+	assert.equal(thread.name, 'tester - Test application');
+	assert.equal(thread.id, delivered.reviewMessageId);
 	assert.equal(
 		flow.discord.operations.filter((operation) => operation === 'create-thread').length,
 		1
+	);
+	const card = flow.discord.reviewMessages.get(delivered.reviewMessageId);
+	const cardContents = card.components[0].components;
+	assert.equal(card.components[0].accent_color, 0x123456);
+	assert.equal(
+		cardContents.find((part) => part.type === 12).items[0].media.url.includes('banner'),
+		true
+	);
+	assert.equal(
+		cardContents.find((part) => part.type === 9).accessory.media.url.includes('avatar'),
+		true
+	);
+	const cardText = JSON.stringify(cardContents);
+	for (const detail of [
+		'Server Name',
+		'tester',
+		'Test User',
+		'<@&12345678901234111>',
+		'<t:1700000000:D>',
+		'<t:1600000000:D>'
+	]) {
+		assert.ok(cardText.includes(detail), `the card shows ${detail}`);
+	}
+	assert.ok(!cardText.includes(`<@&${guildId}>`), 'the everyone role is not listed');
+	const visibleText = (messages) =>
+		JSON.stringify(
+			messages.flatMap((message) =>
+				message.components.flatMap((container) =>
+					(container.components ?? []).filter((part) => part.type === 10)
+				)
+			)
+		);
+	const threadMessages = [...(await thread.messages.fetch()).values()];
+	assert.doesNotMatch(visibleText(threadMessages), /zf-|Applicant: /);
+	assert.doesNotMatch(
+		visibleText([...(await channel.messages.fetch()).values()]),
+		/zf-|prompt:|Submission [0-9a-f]{8}-/
+	);
+	await flow.delivery.deliverReview(submission.id, 'unused-delivery');
+	await database
+		.update(schema.submissions)
+		.set({ deliveryState: 'posting' })
+		.where(eq(schema.submissions.id, submission.id));
+	await flow.delivery.deliverReview(submission.id, 'unused-delivery');
+	assert.equal(
+		(await thread.messages.fetch()).size,
+		threadMessages.length,
+		'a retried delivery recognises its hidden markers'
 	);
 	await formService.recordDecision(
 		submission.id,
@@ -254,6 +351,83 @@ test('first DM opens eligible forms, then submission reaches a channel-visible r
 	assert.match(JSON.stringify([...(await channel.messages.fetch()).values()]), /Welcome aboard/);
 	await formService.archiveForm(flow.form.id, guildId, reviewerId);
 	assert.equal((await formService.findForm(flow.form.id)).archived, true);
+});
+
+test('a retried prompt recognises its hidden marker and sends no second question', async () => {
+	const flow = await setupFlow();
+	await formService.startSession(flow.form.id, flow.userId, [guildId]);
+	await flow.delivery.tick();
+	const session = await formService.findActiveSession(flow.userId);
+	const channel = await (await flow.discord.client.users.fetch(flow.userId)).createDM();
+	const [question] = [...(await channel.messages.fetch()).values()];
+	assert.doesNotMatch(JSON.stringify(question.components), /zf-prompt|prompt:/);
+	assert.ok(question.components[0].id >= 1000000);
+	await database
+		.update(schema.sessions)
+		.set({ status: 'prompt' })
+		.where(eq(schema.sessions.id, session.id));
+	await flow.delivery.deliverPrompt({ payload: { id: session.id, version: session.version } });
+	assert.equal((await channel.messages.fetch()).size, 1);
+	assert.equal((await formService.findSession(session.id)).status, 'answer');
+});
+
+test('questions show progress once, hide unusable buttons and drop numbering typed into the wording', async () => {
+	const flow = await setupFlow();
+	const session = await formService.startSession(flow.form.id, flow.userId, []);
+	const snapshot = {
+		...session.snapshot,
+		questions: [
+			{ ...session.snapshot.questions[0], prompt: '1. First?' },
+			{ ...session.snapshot.questions[0], prompt: '2) Second?\\n-# A hint', required: false }
+		]
+	};
+	const first = JSON.stringify(componentTree(prompt({ ...session, snapshot, position: 0 })));
+	const second = JSON.stringify(componentTree(prompt({ ...session, snapshot, position: 1 })));
+	assert.match(first, /### First\?/);
+	assert.match(first, /Progress is saved/);
+	assert.doesNotMatch(first, /"label":"Back"|"label":"Skip"/);
+	assert.match(second, /### Second\?/);
+	assert.doesNotMatch(second, /Progress is saved/);
+	assert.match(second, /"label":"Back"/);
+	assert.match(second, /"label":"Skip"/);
+	assert.match(
+		JSON.stringify(
+			componentTree(
+				prompt({
+					...session,
+					snapshot: {
+						...snapshot,
+						questions: [{ ...snapshot.questions[0], prompt: '2024 goals?' }]
+					},
+					position: 0
+				})
+			)
+		),
+		/### 2024 goals/
+	);
+});
+
+test('a lost card response repeats its nonce instead of posting a second card', async () => {
+	const flow = await setupFlow();
+	const confirmation = await finishAnswers(flow);
+	const submission = await formService.submitSession(
+		confirmation.id,
+		flow.userId,
+		confirmation.version,
+		[guildId]
+	);
+	flow.discord.loseNextCardResponse();
+	await flow.delivery.tick();
+	const retrying = await formService.findSubmission(submission.id);
+	assert.equal(retrying.deliveryState, 'creating');
+	assert.equal(retrying.reviewMessageId, null);
+	await database
+		.update(schema.jobs)
+		.set({ nextAttemptAt: new Date(0) })
+		.where(eq(schema.jobs.dedupe, `review:${submission.id}:0`));
+	await flow.delivery.tick();
+	assert.equal((await formService.findSubmission(submission.id)).deliveryState, 'ready');
+	assert.equal(flow.discord.reviewMessages.size, 1);
 });
 
 test('lost thread-creation response is reconciled without creating a second thread', async () => {
@@ -439,6 +613,8 @@ test('submission retention removes the submission thread and answer copies while
 	assert.equal(retainedRecord.status, 'rejected');
 	assert.deepEqual(retainedRecord.answers, []);
 	assert.equal(flow.discord.channels.has(delivered.threadId), false);
+	assert.equal(flow.discord.reviewMessages.has(delivered.reviewMessageId), false);
+	assert.equal(retainedRecord.reviewMessageId, null);
 	assert.deepEqual((await formService.findSession(confirmation.id)).answers, []);
 	await formService.startSession(flow.form.id, flow.userId, [guildId]);
 });
@@ -696,8 +872,9 @@ function componentTree(payload) {
 }
 
 function controlId(payload, label) {
-	return componentTree(payload)[0]
-		.components.filter((component) => component.type === 1)
+	return componentTree(payload)
+		.flatMap((container) => container.components)
+		.filter((component) => component.type === 1)
 		.flatMap((row) => row.components)
 		.find((control) => control.label === label).custom_id;
 }
@@ -1254,7 +1431,11 @@ test('form panels replace ID commands for submissions and delivery recovery', as
 
 		const repairId = `zf:b:repair:${flow.form.id}:${reviewerId}:0`;
 		const staleThreadId = (await formService.findSubmission(submission.id)).threadId;
-		flow.discord.reviewThreads.clear();
+		await flow.discord.channels.get(staleThreadId).delete();
+		assert.ok(
+			flow.discord.reviewMessages.has(staleThreadId),
+			'the applicant card outlives its thread'
+		);
 		await route(repairId, 'string', [submission.id]);
 		assert.match(panelText(), /Create replacement thread/);
 		await route(controlId(editor.message.payload, 'Create replacement thread'));
@@ -1263,6 +1444,8 @@ test('form panels replace ID commands for submissions and delivery recovery', as
 		const recovered = await formService.findSubmission(submission.id);
 		assert.equal(recovered.deliveryState, 'ready');
 		assert.notEqual(recovered.threadId, staleThreadId);
+		assert.equal(flow.discord.reviewMessages.has(staleThreadId), false);
+		assert.equal(recovered.threadId, recovered.reviewMessageId);
 
 		await route(repairId, 'string', [submission.id]);
 		assert.match(panelText(), /Delivery recovery is queued/);

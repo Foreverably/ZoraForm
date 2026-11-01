@@ -13,7 +13,7 @@ import { FormService } from '../services/form-service';
 import { StaffPermissions } from '../services/staff-permissions';
 import { describeNumberLimits, describeTextLimits, FormError } from '../domain/rules';
 import type { FormRecord } from '../domain/types';
-import { panel, buttons, button, safe } from './components';
+import { panel, buttons, button, questionHeading, safe } from './components';
 
 const pageSize = 10;
 
@@ -261,7 +261,7 @@ export class FormBrowsing {
 
 	public async preview(form: FormRecord, actorId: string, requestedPage = 0) {
 		const previewPages = form.data.questions.flatMap((question, index) => {
-			let details = `-# Question ${index + 1} of ${form.data.questions.length} · ${question.required ? 'Required' : 'Optional'} · ${question.type}\n\n### ${safe(question.prompt)}`;
+			let details = `-# Question ${index + 1} of ${form.data.questions.length} · ${question.required ? 'Required' : 'Optional'} · ${question.type}\n\n${questionHeading(question.prompt)}`;
 
 			if (question.type === 'text') details += `\nAnswer: ${describeTextLimits(question)}`;
 			if (question.type === 'number')

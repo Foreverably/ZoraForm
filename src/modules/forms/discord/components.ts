@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { ZodError } from 'zod';
 import { describeNumberLimits, describeTextLimits, FormError } from '../domain/rules';
 import {
@@ -29,23 +30,69 @@ export const button = (id: string, label: string, style = ButtonStyle.Secondary)
 export const buttons = (...items: ButtonBuilder[]) =>
 	new ActionRowBuilder<ButtonBuilder>().addComponents(items);
 
-export function panel(text: string, rows: Row[] = []) {
-	const container = new ContainerBuilder();
-	container.addTextDisplayComponents(new TextDisplayBuilder().setContent(text));
+export interface PanelSection {
+	text?: string;
+	rows?: Row[];
+	accentColor?: number;
+}
 
-	if (rows.length) {
+function sectionContainer({ text, rows = [], accentColor }: PanelSection) {
+	const container = new ContainerBuilder();
+
+	if (accentColor !== undefined) {
+		container.setAccentColor(accentColor);
+	}
+
+	if (text) {
+		container.addTextDisplayComponents(new TextDisplayBuilder().setContent(text));
+	}
+
+	if (text && rows.length) {
 		container.addSeparatorComponents(
 			new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Small)
 		);
+	}
+
+	if (rows.length) {
 		container.addActionRowComponents(...rows.map((row) => row.toJSON()));
 	}
 
+	return container;
+}
+
+export function panelSections(sections: PanelSection[]) {
 	return {
-		components: [container],
+		components: sections.map(sectionContainer),
 		flags: MessageFlags.IsComponentsV2 as const,
 		attachments: [],
 		allowedMentions: { parse: [] }
 	};
+}
+
+export function panel(text: string, rows: Row[] = []) {
+	return panelSections([{ text, rows }]);
+}
+
+// Component ids are hidden from readers and returned by Discord, which lets delivery retries
+// recognise a message it already sent. Discord assigns small ids itself, so these start higher.
+export function hiddenMarker(key: string) {
+	return 1_000_000 + (createHash('sha256').update(key).digest().readUInt32BE(0) % 2_000_000_000);
+}
+
+export function markPanel<Payload extends ReturnType<typeof panelSections>>(
+	payload: Payload,
+	key: string
+) {
+	payload.components[0]!.setId(hiddenMarker(key));
+	return payload;
+}
+
+// The bot numbers questions itself, so numbering typed into the wording would repeat it and go
+// wrong after a reorder. The saved wording is left as staff wrote it.
+export const withoutNumbering = (wording: string) => wording.replace(/^\s*\d+[.)]\s+(?=\S)/, '');
+
+export function questionHeading(wording: string) {
+	return `### ${safe(withoutNumbering(wording))}`;
 }
 
 export function displayAnswer(answer: QuestionAnswer | undefined) {
@@ -77,7 +124,7 @@ export function summary(session: QuestionnaireSession, requestedPage = 0, reques
 		button(`${prefix}:edit:${page}`, 'Edit answer')
 	);
 	return panel(
-		`## ${safe(session.snapshot.name)}\n-# Review answer ${page + 1} of ${session.snapshot.questions.length}\n\n### ${safe(question.prompt)}\n${pages[answerPage]}${pages.length > 1 ? `\n-# Answer part ${answerPage + 1} of ${pages.length}` : ''}\n\nSubmit when you are satisfied with your answers.`,
+		`## ${safe(session.snapshot.name)}\n-# Review answer ${page + 1} of ${session.snapshot.questions.length}\n\n${questionHeading(question.prompt)}\n${pages[answerPage]}${pages.length > 1 ? `\n-# Answer part ${answerPage + 1} of ${pages.length}` : ''}\n\nSubmit when you are satisfied with your answers.`,
 		[
 			nav,
 			...(pages.length > 1
@@ -141,16 +188,14 @@ export function prompt(session: QuestionnaireSession) {
 	}
 	rows.push(
 		buttons(
-			button(`${prefix}:back`, 'Back').setDisabled(session.position === 0),
-			button(`${prefix}:skip`, 'Skip').setDisabled(question.required)
-		),
-		buttons(
+			...(session.position > 0 ? [button(`${prefix}:back`, 'Back')] : []),
+			...(question.required ? [] : [button(`${prefix}:skip`, 'Skip')]),
 			button(`${prefix}:pause`, 'Pause'),
 			button(`${prefix}:cancel`, 'Cancel', ButtonStyle.Danger)
 		)
 	);
 	return panel(
-		`## ${safe(session.snapshot.name)}\n-# Question ${session.position + 1} of ${session.snapshot.questions.length}\n\n### ${safe(question.prompt)}\n${hint}\n\n-# Progress is saved for seven days. Submitted answers and files are retained for ${session.snapshot.retentionDays} days for staff review.\n-# zf-prompt:${session.id}:${session.version}`,
+		`-# **${safe(session.snapshot.name)}** · Question ${session.position + 1} of ${session.snapshot.questions.length}\n${questionHeading(question.prompt)}\n-# ${hint}${session.position === 0 ? `\n\n-# Progress is saved for seven days. Submitted answers and files are retained for ${session.snapshot.retentionDays} days for staff review.` : ''}`,
 		rows
 	);
 }
@@ -163,7 +208,7 @@ export function managePanel(form: FormRecord, actorId: string) {
 		form.data.questions
 			.map(
 				(question, questionIndex) =>
-					`${questionIndex + 1}. ${safe(question.prompt.slice(0, 40))}${question.prompt.length > 40 ? '…' : ''} · \`${question.type}\``
+					`${questionIndex + 1}. ${safe(withoutNumbering(question.prompt).slice(0, 40))}${withoutNumbering(question.prompt).length > 40 ? '…' : ''} · \`${question.type}\``
 			)
 			.join('\n') || '*No questions yet. Add your first question below.*';
 	const description = form.data.description ? `\n${safe(form.data.description)}\n` : '';
