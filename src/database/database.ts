@@ -3,7 +3,7 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { join } from 'node:path';
 import * as schema from './schema';
-import { rootDir } from '../lib/constants';
+import { rootDir } from '../lib/environment';
 
 export function createPostgresConnection(connectionString: string) {
 	const connectionPool = new Pool({

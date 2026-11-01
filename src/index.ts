@@ -1,8 +1,11 @@
-import './lib/setup';
+import '@sapphire/plugin-logger/register';
+import { initializeEnvironment } from './lib/environment';
 
 import { LogLevel, SapphireClient } from '@sapphire/framework';
 import { GatewayIntentBits, Partials } from 'discord.js';
 import { createRuntime } from './modules/forms/runtime';
+
+initializeEnvironment();
 
 const client = new SapphireClient({
 	logger: { level: LogLevel.Info },
