@@ -11,7 +11,7 @@ import {
 import { forms, submissions } from '../../../database/schema';
 import { FormService } from '../services/form-service';
 import { StaffPermissions } from '../services/staff-permissions';
-import { FormError } from '../domain/rules';
+import { describeNumberLimits, describeTextLimits, FormError } from '../domain/rules';
 import type { FormRecord } from '../domain/types';
 import { panel, buttons, button, safe } from './components';
 
@@ -263,10 +263,9 @@ export class FormBrowsing {
 		const previewPages = form.data.questions.flatMap((question, index) => {
 			let details = `-# Question ${index + 1} of ${form.data.questions.length} · ${question.required ? 'Required' : 'Optional'} · ${question.type}\n\n### ${safe(question.prompt)}`;
 
-			if (question.type === 'text')
-				details += `\nLength: ${question.min}–${question.max} characters`;
+			if (question.type === 'text') details += `\nAnswer: ${describeTextLimits(question)}`;
 			if (question.type === 'number')
-				details += `\nRange: ${question.min}–${question.max}${question.integer ? ' (whole numbers)' : ''}`;
+				details += `\nAnswer: a number${describeNumberLimits(question) ? ` ${describeNumberLimits(question)}` : ''}`;
 			if (question.type === 'choice')
 				details += `\n${question.options.map((choice, choiceIndex) => `${choiceIndex + 1}. ${safe(choice)}`).join('\n')}`;
 			if (question.type === 'attachment')

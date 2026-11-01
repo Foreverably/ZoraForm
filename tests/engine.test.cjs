@@ -7,7 +7,12 @@ const { migrate } = require('drizzle-orm/pglite/migrator');
 const { eq } = require('drizzle-orm');
 const schema = require('../dist/database/schema');
 const { FormService } = require('../dist/modules/forms/services/form-service');
-const { assertFormAccess, validateQuestionAnswer } = require('../dist/modules/forms/domain/rules');
+const {
+	assertFormAccess,
+	describeNumberLimits,
+	numberLimits,
+	validateQuestionAnswer
+} = require('../dist/modules/forms/domain/rules');
 const { formQuestionSchema } = require('../dist/modules/forms/domain/schemas');
 const { createPostgresConnection } = require('../dist/database/database');
 let formService, database, close;
@@ -178,12 +183,37 @@ test('responses to an old prompt and malformed numbers are rejected', async () =
 		type: 'number',
 		prompt: 'Age',
 		min: 18,
-		max: 100,
-		integer: true
+		max: 100
 	});
 	assert.throws(() => validateQuestionAnswer(number, '18 years'));
-	assert.throws(() => validateQuestionAnswer(number, '18.5'));
+	assert.throws(() => validateQuestionAnswer(number, '17'), /between 18 and 100/);
+	assert.equal(validateQuestionAnswer(number, '18.5'), 18.5);
 	assert.equal(validateQuestionAnswer(number, '24'), 24);
+});
+
+test('number questions have no limits by default and old stored defaults count as no limit', () => {
+	const unlimited = formQuestionSchema.parse({ id: randomUUID(), type: 'number', prompt: 'Age' });
+	assert.equal(unlimited.min, null);
+	assert.equal(unlimited.max, null);
+	assert.equal(validateQuestionAnswer(unlimited, '-5000000000'), -5000000000);
+	assert.throws(() => validateQuestionAnswer(unlimited, 'many'), /such as 25/);
+	const savedBeforeLimitsWereOptional = { ...unlimited, min: -1e9, max: 1e9, integer: true };
+	assert.deepEqual(numberLimits(savedBeforeLimitsWereOptional), { min: null, max: null });
+	assert.equal(describeNumberLimits(savedBeforeLimitsWereOptional), null);
+	assert.equal(validateQuestionAnswer(savedBeforeLimitsWereOptional, '2.5'), 2.5);
+	assert.equal(describeNumberLimits({ ...unlimited, min: 18 }), 'of at least 18');
+	assert.equal(describeNumberLimits({ ...unlimited, max: 99 }), 'of at most 99');
+	assert.throws(
+		() =>
+			formQuestionSchema.parse({
+				id: randomUUID(),
+				type: 'number',
+				prompt: 'Age',
+				min: 9,
+				max: 2
+			}),
+		/Minimum must not exceed maximum/
+	);
 });
 test('denials beat allow-lists, required roles and membership are enforced', async () => {
 	const fixtureData = await fixture({

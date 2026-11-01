@@ -1,5 +1,5 @@
 import { ZodError } from 'zod';
-import { FormError } from '../domain/rules';
+import { describeNumberLimits, describeTextLimits, FormError } from '../domain/rules';
 import {
 	ActionRowBuilder,
 	ButtonBuilder,
@@ -111,10 +111,11 @@ export function prompt(session: QuestionnaireSession) {
 	const prefix = `zf:s:${session.id}:${session.version}`;
 	let hint = 'Reply with your answer.';
 	if (question.type === 'text') {
-		hint = `Reply with ${question.min}–${question.max} characters.`;
+		hint = `Reply with ${describeTextLimits(question)}.`;
 	}
 	if (question.type === 'number') {
-		hint = `Reply with ${question.integer ? 'an integer' : 'a number'} between ${question.min} and ${question.max}.`;
+		const limits = describeNumberLimits(question);
+		hint = limits ? `Reply with a number ${limits}.` : 'Reply with a number.';
 	}
 	if (question.type === 'choice') {
 		hint = 'Select one answer below.';

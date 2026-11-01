@@ -32,9 +32,8 @@ export const formQuestionSchema = validation
 		validation.object({
 			...sharedQuestionFields,
 			type: validation.literal('number'),
-			min: validation.number().default(-1e9),
-			max: validation.number().default(1e9),
-			integer: validation.boolean().default(false)
+			min: validation.number().nullable().default(null),
+			max: validation.number().nullable().default(null)
 		}),
 		validation.object({
 			...sharedQuestionFields,
@@ -49,6 +48,8 @@ export const formQuestionSchema = validation
 	.superRefine((question, validationContext) => {
 		if (
 			(question.type === 'text' || question.type === 'number') &&
+			question.min !== null &&
+			question.max !== null &&
 			question.min > question.max
 		) {
 			validationContext.addIssue({

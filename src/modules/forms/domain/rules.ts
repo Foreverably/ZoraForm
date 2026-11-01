@@ -21,6 +21,39 @@ export function assertFormAccess(
 	}
 }
 
+type NumberQuestion = Extract<FormQuestion, { type: 'number' }>;
+type TextQuestion = Extract<FormQuestion, { type: 'text' }>;
+
+// Number questions saved before limits became optional stored these values for "no limit".
+const legacyNoLimit = 1e9;
+
+export function numberLimits(question: NumberQuestion) {
+	return {
+		min: question.min === -legacyNoLimit ? null : question.min,
+		max: question.max === legacyNoLimit ? null : question.max
+	};
+}
+
+export function describeNumberLimits(question: NumberQuestion) {
+	const { min, max } = numberLimits(question);
+
+	if (min !== null && max !== null) {
+		return `between ${min} and ${max}`;
+	}
+
+	if (min !== null) {
+		return `of at least ${min}`;
+	}
+
+	return max === null ? null : `of at most ${max}`;
+}
+
+export function describeTextLimits(question: TextQuestion) {
+	return question.min > 1
+		? `${question.min}–${question.max} characters`
+		: `up to ${question.max} characters`;
+}
+
 export function validateQuestionAnswer(
 	question: FormQuestion,
 	answerText: string,
@@ -40,7 +73,7 @@ export function validateQuestionAnswer(
 	const text = answerText.trim();
 	if (question.type === 'text') {
 		if (text.length < question.min || text.length > question.max) {
-			throw new FormError(`Use ${question.min}–${question.max} characters.`);
+			throw new FormError(`Use ${describeTextLimits(question)}.`);
 		}
 		return text;
 	}
@@ -51,18 +84,13 @@ export function validateQuestionAnswer(
 		return text;
 	}
 	if (!/^-?(?:\d+(?:\.\d+)?|\.\d+)$/.test(text)) {
-		throw new FormError('Enter a number using a dot for decimals.');
+		throw new FormError('Enter a number, such as 25 or 2.5.');
 	}
 	const value = Number(text);
-	if (
-		!Number.isFinite(value) ||
-		value < question.min ||
-		value > question.max ||
-		(question.integer && !Number.isInteger(value))
-	) {
-		throw new FormError(
-			`Enter ${question.integer ? 'an integer' : 'a number'} between ${question.min} and ${question.max}.`
-		);
+	const { min, max } = numberLimits(question);
+	if (!Number.isFinite(value) || (min !== null && value < min) || (max !== null && value > max)) {
+		const limits = describeNumberLimits(question);
+		throw new FormError(`Enter a number${limits ? ` ${limits}` : ''}.`);
 	}
 	return value;
 }

@@ -43,13 +43,13 @@ Exactly one user or role must be selected. Grants are server-specific and checke
 
 ## Create forms
 
-Run `/form create` with a name and submission channel, then use the interactive builder to add, edit, remove, reorder, and preview questions. Text, numbers, single-choice answers, and attachments are supported. Choosing a question opens its editor, where each setting changes on its own: wording, required or optional, answer limits, whole numbers only, and answer choices.
+Run `/form create` with a name and submission channel, then use the interactive builder to add, edit, remove, reorder, and preview questions. Text, numbers, single-choice answers, and attachments are supported. Choosing a question opens its editor, where each setting changes on its own: wording, required or optional, answer limits, and answer choices. Number questions accept any number and have no limits unless staff set a lowest or highest value.
 
 The builder updates one message as you navigate, save a modal, or return with Back. Modals use Discord Label components. Staff review provides a native text-channel picker.
 
 ### Reference files
 
-Staff can show 1–3 screenshots or documents with a question, up to 8 MiB each and 20 MiB per question. The bot keeps them in a message in the form's submission channel and stores only that message's identifiers, so anyone who can read the channel can see them. Do not delete that message while forms or saved questionnaires use it.
+Staff can show 1–3 screenshots or documents with a question, up to 8 MiB each and 20 MiB per question. The bot keeps them in a message in the form's submission channel and stores only that message's identifiers, so anyone who can read the channel can see them. Each file name in the question editor links to that message. Do not delete that message while forms or saved questionnaires use it.
 
 Replacing files, removing them, or removing their question retires the old message. Questionnaires already in progress stay on the revision they started with, so the bot deletes a retired message automatically once no form draft, published form, or unfinished questionnaire uses it. Files on an archived form stay available because the form can be reopened.
 

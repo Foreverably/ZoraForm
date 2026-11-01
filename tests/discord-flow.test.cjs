@@ -517,8 +517,7 @@ test('text, choice, number and attachment answers survive the complete questionn
 				type: 'number',
 				prompt: 'Hours available?',
 				min: 1,
-				max: 40,
-				integer: true
+				max: 40
 			}),
 			formQuestionSchema.parse({
 				id: randomUUID(),
@@ -670,9 +669,9 @@ function managementEditor(flow) {
 		user: { id: reviewerId },
 		message,
 		values,
+		fields,
 		inGuild: () => true,
 		isButton: () => kind === 'button',
-		fields,
 		isModalSubmit: () => kind === 'modal',
 		isFromMessage: () => true,
 		isStringSelectMenu: () => kind === 'string',
@@ -730,6 +729,10 @@ test('question editor changes one setting at a time on one management message', 
 	const flow = await setupFlow();
 	const editor = managementEditor(flow);
 	const prefix = `zf:m:${flow.form.id}:${reviewerId}`;
+	await formService.editFormDraft(flow.form.id, guildId, reviewerId, (configuration) => ({
+		...configuration,
+		questions: [{ ...configuration.questions[0], prompt: '4. Time zone?\nCity is fine' }]
+	}));
 	const savedQuestion = async (index = 0) =>
 		(await formService.findForm(flow.form.id)).data.questions[index];
 	await editor.builder.handleInteraction(editor.interaction(`${prefix}:edit`));
@@ -737,6 +740,10 @@ test('question editor changes one setting at a time on one management message', 
 	await openQuestion(editor, flow.form.id, 0);
 	assert.equal(editor.modals.length, 0);
 	assert.match(JSON.stringify(componentTree(editor.message.payload)), /Edit wording/);
+	assert.match(
+		JSON.stringify(componentTree(editor.message.payload)),
+		/> 4\. Time zone\?\\n> City is fine\\n\\n\*\*Answer:\*\* 3–2000 characters/
+	);
 
 	const staleControl = controlId(editor.message.payload, 'Make optional');
 	await pressControl(editor, 'Edit wording');
@@ -774,8 +781,23 @@ test('question editor changes one setting at a time on one management message', 
 	assert.equal(editor.modals.at(-1).components.length, 1);
 	await submitLatestModal(editor, { prompt: 'How many hours?' });
 	assert.match(JSON.stringify(componentTree(editor.message.payload)), /Question 2/);
-	await pressControl(editor, 'Whole numbers only');
-	assert.equal((await savedQuestion(1)).integer, true);
+	let numberPanel = JSON.stringify(componentTree(editor.message.payload));
+	assert.match(numberPanel, /A number\\n/);
+	assert.doesNotMatch(numberPanel, /Whole numbers|decimals|1000000000/);
+	await pressControl(editor, 'Answer limits');
+	const limitsModal = editor.modals.at(-1);
+	assert.ok(limitsModal.components.every(({ component }) => component.required === false));
+	assert.ok(limitsModal.components.every(({ component }) => !('value' in component)));
+	await submitLatestModal(editor, { minimum: '18', maximum: '' });
+	assert.equal((await savedQuestion(1)).min, 18);
+	assert.equal((await savedQuestion(1)).max, null);
+	numberPanel = JSON.stringify(componentTree(editor.message.payload));
+	assert.match(numberPanel, /A number of at least 18/);
+	await pressControl(editor, 'Answer limits');
+	await assert.rejects(
+		submitLatestModal(editor, { minimum: 'old', maximum: '' }),
+		/must be numbers/
+	);
 
 	await editor.builder.handleInteraction(editor.interaction(`${prefix}:back`));
 	assert.match(JSON.stringify(componentTree(editor.message.payload)), /Add question/);
@@ -867,7 +889,12 @@ test('reference files keep their names and reach the preview and the applicant p
 		]
 	);
 	assert.equal(messages.size, 1);
-	assert.match(JSON.stringify(componentTree(editor.message.payload)), /Guide Map/);
+	const storedMessageLink = `https://discord.com/channels/${guildId}/${reviewChannelId}/${saved.data.questions[0].references[0].messageId}`;
+	assert.ok(
+		JSON.stringify(componentTree(editor.message.payload)).includes(
+			`[Guide Map.png](${storedMessageLink})`
+		)
+	);
 
 	await editor.builder.handleInteraction(editor.interaction(`${prefix}:preview`));
 	assert.equal(editor.message.payload.files.length, 2);

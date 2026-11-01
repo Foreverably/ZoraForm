@@ -5,15 +5,16 @@ import {
 	ModalBuilder,
 	TextInputBuilder,
 	TextInputStyle,
+	messageLink,
 	type ButtonInteraction,
 	type AnySelectMenuInteraction,
 	type ModalSubmitInteraction
 } from 'discord.js';
 import type { FormQuestion, FormRecord, QuestionReference } from '../domain/types';
-import { FormError } from '../domain/rules';
+import { describeNumberLimits, describeTextLimits, FormError, numberLimits } from '../domain/rules';
 import { FormService } from '../services/form-service';
 import { QuestionMedia } from '../services/question-media';
-import { button, buttons, panel, safe, type Row } from './components';
+import { button, buttons, panel, safe } from './components';
 
 type EditorInteraction = ButtonInteraction | AnySelectMenuInteraction | ModalSubmitInteraction;
 
@@ -26,57 +27,61 @@ export function questionEditorPanel(form: FormRecord, actorId: string, questionI
 
 	const controlId = (action: string) =>
 		`zf:qe:${form.id}:${actorId}:${questionIndex}:${form.data.revision}:${action}`;
-	const controls: Row[] = [
-		buttons(
-			button(controlId('prompt'), 'Edit wording', ButtonStyle.Primary),
-			button(controlId('required'), question.required ? 'Make optional' : 'Make required')
-		)
+	const settingButtons = [
+		button(controlId('prompt'), 'Edit wording', ButtonStyle.Primary),
+		button(controlId('required'), question.required ? 'Make optional' : 'Make required')
 	];
 	let details = '';
 
-	if (question.type === 'text' || question.type === 'number') {
-		details = `\n- **${question.type === 'text' ? 'Length' : 'Range'}:** ${question.min}–${question.max}${question.type === 'text' ? ' characters' : ''}`;
-		controls.push(
-			buttons(
-				button(controlId('limits'), 'Answer limits'),
-				...(question.type === 'number'
-					? [
-							button(
-								controlId('integer'),
-								question.integer ? 'Allow decimals' : 'Whole numbers only'
-							)
-						]
-					: [])
-			)
-		);
+	if (question.type === 'text') {
+		const limits = describeTextLimits(question);
+		details = `**Answer:** ${limits[0]!.toUpperCase()}${limits.slice(1)}\n`;
+		settingButtons.push(button(controlId('limits'), 'Answer limits'));
+	}
+
+	if (question.type === 'number') {
+		const limits = describeNumberLimits(question);
+		details = `**Answer:** A number${limits ? ` ${limits}` : ''}\n`;
+		settingButtons.push(button(controlId('limits'), 'Answer limits'));
 	}
 
 	if (question.type === 'choice') {
 		const choices = question.options
 			.map((choice, index) => `${index + 1}. ${safe(choice)}`)
 			.join('\n');
-		details = `\n${choices.length > 2400 ? `${choices.slice(0, 2400)}…` : choices}`;
-		controls.push(buttons(button(controlId('choices'), 'Edit choices')));
+		details = `**Choices:**\n${choices.length > 2400 ? `${choices.slice(0, 2400)}…` : choices}\n`;
+		settingButtons.push(button(controlId('choices'), 'Edit choices'));
 	}
 
 	const references = question.references ?? [];
-	const filenames = references.map((reference) => `- ${safe(reference.name)}`).join('\n');
-	controls.push(
-		buttons(
-			button(controlId('upload'), references.length ? 'Replace files' : 'Reference files'),
-			button(controlId('clear'), 'Remove files').setDisabled(!references.length)
+	const fileLinks = references
+		.map(
+			(reference) =>
+				`[${safe(reference.name.replace(/[[\]]/g, ''))}](${messageLink(reference.channelId, reference.messageId, form.guildId)})`
 		)
-	);
-	controls.push(
-		buttons(
-			button(`zf:m:${form.id}:${actorId}:preview`, 'Preview form'),
-			button(`zf:m:${form.id}:${actorId}:back`, 'Back to form')
-		)
-	);
+		.join(', ');
+	const typeLabel = `${question.type[0]!.toUpperCase()}${question.type.slice(1)}`;
+	const wording = question.prompt
+		.split('\n')
+		.map((line) => `> ${safe(line)}`)
+		.join('\n');
 
 	return panel(
-		`## Question ${questionIndex + 1}\n-# ${question.type} · ${question.required ? 'Required' : 'Optional'}${question.type === 'number' && question.integer ? ' · Whole numbers' : ''}\n\n${safe(question.prompt)}${details}\n\n### Reference files\n${filenames || '*No reference files. Add screenshots or documents to show with this question.*'}\n\n-# Changes stay in the draft until you publish.`,
-		controls
+		`## Question ${questionIndex + 1} of ${form.data.questions.length}\n-# ${typeLabel} · ${question.required ? 'Required' : 'Optional'}\n\n${wording}\n\n${details}**Reference files:** ${fileLinks || 'None'}\n\n-# Changes stay in the draft until you publish.`,
+		[
+			buttons(...settingButtons),
+			buttons(
+				button(
+					controlId('upload'),
+					references.length ? 'Replace files' : 'Reference files'
+				),
+				...(references.length ? [button(controlId('clear'), 'Remove files')] : [])
+			),
+			buttons(
+				button(`zf:m:${form.id}:${actorId}:preview`, 'Preview form'),
+				button(`zf:m:${form.id}:${actorId}:back`, 'Back to form')
+			)
+		]
 	);
 }
 
@@ -146,19 +151,22 @@ export class QuestionEditor {
 						case 'required':
 							questions[questionIndex] = { ...current, required: !current.required };
 							break;
-						case 'integer':
-							if (current.type !== 'number')
-								throw new FormError('Only number questions have this setting.');
-							questions[questionIndex] = { ...current, integer: !current.integer };
-							break;
 						case 'limits':
 							if (current.type !== 'text' && current.type !== 'number')
 								throw new FormError('This question has no numeric limits.');
-							questions[questionIndex] = {
-								...current,
-								min: Number(value('minimum')),
-								max: Number(value('maximum'))
-							};
+							if (current.type === 'text') {
+								questions[questionIndex] = {
+									...current,
+									min: Number(value('minimum')),
+									max: Number(value('maximum'))
+								};
+							} else {
+								questions[questionIndex] = {
+									...current,
+									min: this.optionalLimit(value('minimum')),
+									max: this.optionalLimit(value('maximum'))
+								};
+							}
 							break;
 						case 'choices':
 							if (current.type !== 'choice')
@@ -205,6 +213,20 @@ export class QuestionEditor {
 		);
 	}
 
+	private optionalLimit(input: string) {
+		if (input === '') {
+			return null;
+		}
+
+		const limit = Number(input);
+
+		if (!Number.isFinite(limit)) {
+			throw new FormError('Limits must be numbers, such as 18 or 2.5.');
+		}
+
+		return limit;
+	}
+
 	private editModal(customId: string, action: string, question: FormQuestion) {
 		const modal = new ModalBuilder().setCustomId(customId).setTitle('Edit question');
 		const textField = (id: string, label: string, value: string, multiline = false) =>
@@ -215,6 +237,19 @@ export class QuestionEditor {
 					.setStyle(multiline ? TextInputStyle.Paragraph : TextInputStyle.Short)
 					.setMaxLength(id === 'prompt' ? 300 : id === 'choices' ? 2524 : 30)
 			);
+		const optionalLimitField = (id: string, label: string, limit: number | null) => {
+			const input = new TextInputBuilder()
+				.setCustomId(id)
+				.setStyle(TextInputStyle.Short)
+				.setMaxLength(30)
+				.setRequired(false);
+
+			if (limit !== null) {
+				input.setValue(String(limit));
+			}
+
+			return new LabelBuilder().setLabel(label).setTextInputComponent(input);
+		};
 
 		if (action === 'upload') {
 			return modal
@@ -252,10 +287,19 @@ export class QuestionEditor {
 			);
 		}
 
-		if (action === 'limits' && (question.type === 'text' || question.type === 'number')) {
+		if (action === 'limits' && question.type === 'text') {
 			return modal.addLabelComponents(
-				textField('minimum', 'Minimum', String(question.min)),
-				textField('maximum', 'Maximum', String(question.max))
+				textField('minimum', 'Minimum characters', String(question.min)),
+				textField('maximum', 'Maximum characters (up to 2,000)', String(question.max))
+			);
+		}
+
+		if (action === 'limits' && question.type === 'number') {
+			const { min, max } = numberLimits(question);
+
+			return modal.addLabelComponents(
+				optionalLimitField('minimum', 'Lowest number (empty for no limit)', min),
+				optionalLimitField('maximum', 'Highest number (empty for no limit)', max)
 			);
 		}
 
