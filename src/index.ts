@@ -1,16 +1,16 @@
 import './lib/setup';
-
 import { LogLevel, SapphireClient } from '@sapphire/framework';
 import { GatewayIntentBits, Partials } from 'discord.js';
-
 const client = new SapphireClient({
 	logger: { level: LogLevel.Info },
 	intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages],
 	partials: [Partials.Channel],
 	loadMessageCommandListeners: false,
-	allowedMentions: { parse: [], repliedUser: false }
+	allowedMentions: {
+		parse: [],
+		repliedUser: false
+	}
 });
-
 async function main() {
 	const token = process.env.DISCORD_TOKEN?.trim();
 	if (!token) {
@@ -18,7 +18,6 @@ async function main() {
 		process.exitCode = 1;
 		return;
 	}
-
 	try {
 		await client.login(token);
 	} catch (error) {
@@ -27,11 +26,9 @@ async function main() {
 		process.exitCode = 1;
 	}
 }
-
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 	process.once(signal, () => {
 		void client.destroy();
 	});
 }
-
 void main();

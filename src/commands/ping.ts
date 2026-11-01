@@ -1,7 +1,6 @@
 import { ApplyOptions } from '@sapphire/decorators';
 import { Command } from '@sapphire/framework';
 import { ApplicationIntegrationType, InteractionContextType } from 'discord.js';
-
 @ApplyOptions<Command.Options>({
 	description: 'Check whether ZoraForms is online.'
 })
@@ -16,6 +15,8 @@ export class PingCommand extends Command {
 	}
 
 	public override async chatInputRun(interaction: Command.ChatInputCommandInteraction) {
-		return interaction.reply({ content: `Pong! Gateway latency: ${Math.round(this.container.client.ws.ping)}ms.` });
+		return interaction.reply({
+			content: `Pong! Gateway latency: ${Math.round(this.container.client.ws.ping)}ms.`
+		});
 	}
 }
