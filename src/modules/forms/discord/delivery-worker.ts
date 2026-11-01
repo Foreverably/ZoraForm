@@ -41,6 +41,7 @@ export class MissingReviewThreadError extends FormError {}
 export class DiscordDelivery {
 	private interval: NodeJS.Timeout | undefined;
 	private running = false;
+	private wakeRequested = false;
 	private lastCleanup = 0;
 
 	public constructor(
@@ -90,12 +91,19 @@ export class DiscordDelivery {
 		return channel;
 	}
 
+	// Starts delivery straight away instead of waiting for the next poll.
+	public wake() {
+		this.wakeRequested = true;
+		return this.tick();
+	}
+
 	public async tick() {
 		if (this.running || !this.client.isReady()) {
 			return;
 		}
 
 		this.running = true;
+		this.wakeRequested = false;
 
 		try {
 			for (let deliveryCount = 0; deliveryCount < 10; deliveryCount++) {
@@ -141,6 +149,10 @@ export class DiscordDelivery {
 			console.error('A delivery or retention operation failed. It will retry.');
 		} finally {
 			this.running = false;
+
+			if (this.wakeRequested) {
+				void this.tick();
+			}
 		}
 	}
 
@@ -173,8 +185,10 @@ export class DiscordDelivery {
 		const applicant = await this.client.users.fetch(session.userId);
 		const directMessages = await applicant.createDM();
 		const marker = `prompt:${session.id}:${session.version}`;
-		const recentMessages = await directMessages.messages.fetch({ limit: 100 });
-		let questionMessage = recentMessages.find((message) => this.isMarked(message, marker));
+		// Only a retry can find its question already sent, so a first attempt skips this lookup.
+		const recentMessages =
+			deliveryJob.attempts === 0 ? null : await directMessages.messages.fetch({ limit: 100 });
+		let questionMessage = recentMessages?.find((message) => this.isMarked(message, marker));
 
 		if (!questionMessage) {
 			questionMessage = await directMessages.send(

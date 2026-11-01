@@ -1398,6 +1398,33 @@ test('blacklist-only staff can open Access and block users but not change other 
 		.where(eq(schema.staffGrants.subjectId, blacklistRole));
 });
 
+test('waking delivery sends the question without waiting and without reading old messages', async () => {
+	const flow = await setupFlow();
+	const channel = await (await flow.discord.client.users.fetch(flow.userId)).createDM();
+	const readHistory = channel.messages.fetch;
+	let historyReads = 0;
+	channel.messages.fetch = (...request) => {
+		historyReads++;
+		return readHistory(...request);
+	};
+	const otherUser = randomUUID();
+	await formService.startSession(flow.form.id, flow.userId, [guildId]);
+	const running = flow.delivery.tick();
+	await formService.startSession(flow.form.id, otherUser, [guildId]);
+	void flow.delivery.wake();
+	await running;
+	for (
+		let attempt = 0;
+		attempt < 100 && (await formService.findActiveSession(otherUser)).status !== 'answer';
+		attempt++
+	) {
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.equal((await formService.findActiveSession(otherUser)).status, 'answer');
+	assert.equal((await formService.findActiveSession(flow.userId)).status, 'answer');
+	assert.equal(historyReads, 0);
+});
+
 test('submission limits are chosen from menus that explain deletion', async () => {
 	const flow = await setupFlow();
 	const editor = managementEditor(flow);

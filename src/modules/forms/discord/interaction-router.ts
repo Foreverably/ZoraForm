@@ -252,6 +252,7 @@ export async function routeFormInteraction(interaction: FormInteraction) {
 			}
 
 			await runtime.applicants.handleInteraction(interaction);
+			void runtime.delivery.wake();
 			return;
 		}
 

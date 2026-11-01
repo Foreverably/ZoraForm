@@ -18,7 +18,9 @@ export class DirectMessageListener extends Listener<typeof Events.MessageCreate>
 		try {
 			const runtime = formsRuntime();
 			await runtime.rateLimits.enforce(message.author.id, 'message');
+			void message.channel.sendTyping().catch(() => undefined);
 			await runtime.applicants.handleMessage(message);
+			void runtime.delivery.wake();
 		} catch (error) {
 			if (error instanceof RateLimitError && !error.shouldNotify) {
 				return;
