@@ -344,7 +344,7 @@ export function explainFormError(error: unknown) {
 	}
 
 	console.error(
-		'A form operation failed. Applicant answers and credentials have not been logged.'
+		`A form operation failed (${error instanceof Error ? error.name : 'unknown error'}).`
 	);
 	return 'This could not be completed right now. Your saved progress is safe. Please try again.';
 }

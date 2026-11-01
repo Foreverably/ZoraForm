@@ -1941,6 +1941,80 @@ test('form panels replace ID commands for submissions and delivery recovery', as
 	}
 });
 
+test('every staff modal opens within Discord limits and reordering saves', async () => {
+	const flow = await setupFlow();
+	const editor = managementEditor(flow);
+	const prefix = `zf:m:${flow.form.id}:${reviewerId}`;
+	const addQuestion = async (type, prompt, extra = {}) => {
+		await formService.editFormDraft(flow.form.id, guildId, reviewerId, (configuration) => ({
+			...configuration,
+			questions: [
+				...configuration.questions,
+				formQuestionSchema.parse({ id: randomUUID(), type, prompt, ...extra })
+			]
+		}));
+	};
+	await addQuestion('number', 'Number question?');
+	await addQuestion('choice', 'Choice question?', { options: ['One', 'Two'] });
+	await addQuestion('attachment', 'File question?');
+
+	for (const action of ['details', 'review', 'order']) {
+		await editor.builder.handleInteraction(editor.interaction(`${prefix}:${action}`));
+	}
+	const { revision } = (await formService.findForm(flow.form.id)).data;
+	for (const type of ['text', 'number', 'choice', 'attachment']) {
+		await editor.builder.handleInteraction(
+			editor.interaction(`zf:type:${flow.form.id}:${reviewerId}:${revision}`, 'string', [
+				type
+			])
+		);
+	}
+	for (const [questionIndex, labels] of [
+		[0, ['Edit wording', 'Answer limits', 'Reference files']],
+		[1, ['Edit wording', 'Answer limits', 'Reference files']],
+		[2, ['Edit wording', 'Edit choices', 'Reference files']],
+		[3, ['Edit wording', 'Reference files']]
+	]) {
+		await openQuestion(editor, flow.form.id, questionIndex);
+		for (const label of labels) {
+			await pressControl(editor, label);
+		}
+	}
+	const openedLabels = editor.modals.flatMap((modal) =>
+		modal.components.map((component) => component.label)
+	);
+	assert.ok(editor.modals.length >= 14);
+	assert.ok(openedLabels.every((label) => label.length <= 45));
+	assert.ok(editor.modals.every((modal) => modal.title.length <= 45));
+
+	const orderModal = editor.modals.find((modal) =>
+		modal.components.some((component) => component.component.custom_id === 'order')
+	);
+	const questionsBefore = (await formService.findForm(flow.form.id)).data.questions;
+	await editor.builder.handleInteraction(
+		editor.interaction(orderModal.custom_id.replace(/:\d+$/, `:${revision}`), 'modal', [], {
+			getTextInputValue: () => '4,3,2,1'
+		})
+	);
+	assert.deepEqual(
+		(await formService.findForm(flow.form.id)).data.questions.map(
+			(question) => question.prompt
+		),
+		questionsBefore.map((question) => question.prompt).reverse()
+	);
+	await assert.rejects(
+		editor.builder.handleInteraction(
+			editor.interaction(
+				orderModal.custom_id.replace(/:\d+$/, `:${revision + 1}`),
+				'modal',
+				[],
+				{ getTextInputValue: () => '1,1,2,3' }
+			)
+		),
+		/exactly once/
+	);
+});
+
 test('staff review uses a native channel picker and saves into the same panel', async () => {
 	const flow = await setupFlow();
 	const editor = managementEditor(flow);

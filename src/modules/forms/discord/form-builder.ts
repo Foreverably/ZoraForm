@@ -288,7 +288,7 @@ export class FormBuilder {
 				modal(modalId, 'Reorder questions', [
 					{
 						id: 'order',
-						label: 'Question numbers in the new order (e.g. 2,1,3)',
+						label: 'New order of question numbers (e.g. 2,1,3)',
 						value: form.data.questions.map((_, index) => index + 1).join(',')
 					}
 				])
