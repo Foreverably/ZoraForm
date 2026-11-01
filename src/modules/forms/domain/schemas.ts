@@ -2,7 +2,7 @@ import * as validation from 'zod';
 
 export const discordSnowflakeSchema = validation.string().regex(/^\d{17,20}$/);
 const sharedQuestionFields = {
-	id: validation.string().uuid(),
+	id: validation.uuid(),
 	prompt: validation.string().trim().min(1).max(300),
 	required: validation.boolean().default(true)
 };
@@ -18,8 +18,8 @@ export const formQuestionSchema = validation
 		validation.object({
 			...sharedQuestionFields,
 			type: validation.literal('number'),
-			min: validation.number().finite().default(-1e9),
-			max: validation.number().finite().default(1e9),
+			min: validation.number().default(-1e9),
+			max: validation.number().default(1e9),
 			integer: validation.boolean().default(false)
 		}),
 		validation.object({

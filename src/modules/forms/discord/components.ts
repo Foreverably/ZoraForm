@@ -5,14 +5,21 @@ import {
 	ButtonBuilder,
 	ButtonStyle,
 	ContainerBuilder,
+	SeparatorBuilder,
+	SeparatorSpacingSize,
 	MessageFlags,
 	StringSelectMenuBuilder,
+	RoleSelectMenuBuilder,
+	UserSelectMenuBuilder,
 	TextDisplayBuilder,
 	escapeMarkdown
 } from 'discord.js';
 import type { QuestionAnswer, FormRecord, QuestionnaireSession } from '../domain/types';
 
-export type Row = ActionRowBuilder<ButtonBuilder> | ActionRowBuilder<StringSelectMenuBuilder>;
+export type Row =
+	| ActionRowBuilder<ButtonBuilder>
+	| ActionRowBuilder<StringSelectMenuBuilder>
+	| ActionRowBuilder<RoleSelectMenuBuilder | UserSelectMenuBuilder>;
 
 export const safe = (text: string) => escapeMarkdown(text).replace(/@/g, '@\u200b');
 
@@ -23,12 +30,27 @@ export const buttons = (...items: ButtonBuilder[]) =>
 	new ActionRowBuilder<ButtonBuilder>().addComponents(items);
 
 export function panel(text: string, rows: Row[] = []) {
-	const container = new ContainerBuilder().addTextDisplayComponents(
-		new TextDisplayBuilder().setContent(text)
-	);
-	for (const row of rows) {
-		container.addActionRowComponents(row.toJSON());
+	const container = new ContainerBuilder();
+	const paragraphs = text.split(/\n\s*\n/).filter(Boolean);
+	const sections = [...paragraphs.slice(0, 5), paragraphs.slice(5).join('\n\n')].filter(Boolean);
+
+	for (const [sectionIndex, section] of sections.entries()) {
+		if (sectionIndex > 0) {
+			container.addSeparatorComponents(
+				new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Small)
+			);
+		}
+
+		container.addTextDisplayComponents(new TextDisplayBuilder().setContent(section));
 	}
+
+	if (rows.length) {
+		container.addSeparatorComponents(
+			new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Large)
+		);
+		container.addActionRowComponents(...rows.map((row) => row.toJSON()));
+	}
+
 	return {
 		components: [container],
 		flags: MessageFlags.IsComponentsV2 as const,
@@ -163,7 +185,8 @@ export function managePanel(form: FormRecord, actor: string) {
 			buttons(
 				button(id('preview'), 'Preview'),
 				button(id('publish'), 'Publish', ButtonStyle.Success),
-				button(id('archive'), 'Archive', ButtonStyle.Danger)
+				button(id('archive'), 'Archive', ButtonStyle.Danger),
+				button(`zf:b:forms:${actor}:0`, 'All forms')
 			)
 		]
 	);

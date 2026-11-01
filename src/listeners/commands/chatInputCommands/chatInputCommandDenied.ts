@@ -1,4 +1,5 @@
 import type { ChatInputCommandDeniedPayload, Events } from '@sapphire/framework';
+import { MessageFlags } from 'discord.js';
 import { Listener, UserError } from '@sapphire/framework';
 
 export class UserEvent extends Listener<typeof Events.ChatInputCommandDenied> {
@@ -26,7 +27,7 @@ export class UserEvent extends Listener<typeof Events.ChatInputCommandDenied> {
 				users: [interaction.user.id],
 				roles: []
 			},
-			ephemeral: true
+			flags: MessageFlags.Ephemeral
 		});
 	}
 }
