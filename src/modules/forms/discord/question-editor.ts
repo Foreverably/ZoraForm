@@ -14,9 +14,11 @@ import type { FormQuestion, FormRecord, QuestionReference } from '../domain/type
 import { describeNumberLimits, describeTextLimits, FormError, numberLimits } from '../domain/rules';
 import { FormService } from '../services/form-service';
 import { QuestionMedia } from '../services/question-media';
-import { button, buttons, panel, safe } from './components';
+import { button, buttons, panelSections, questionHeading, safe } from './components';
 
 type EditorInteraction = ButtonInteraction | AnySelectMenuInteraction | ModalSubmitInteraction;
+
+const questionAccentColor = 0x5865f2;
 
 export function questionEditorPanel(form: FormRecord, actorId: string, questionIndex: number) {
 	const question = form.data.questions[questionIndex];
@@ -61,28 +63,32 @@ export function questionEditorPanel(form: FormRecord, actorId: string, questionI
 		)
 		.join(', ');
 	const typeLabel = `${question.type[0]!.toUpperCase()}${question.type.slice(1)}`;
-	const wording = question.prompt
-		.split('\n')
-		.map((line) => `> ${safe(line)}`)
-		.join('\n');
 
-	return panel(
-		`## Question ${questionIndex + 1} of ${form.data.questions.length}\n-# ${typeLabel} · ${question.required ? 'Required' : 'Optional'}\n\n${wording}\n\n${details}**Reference files:** ${fileLinks || 'None'}\n\n-# Changes stay in the draft until you publish.`,
-		[
-			buttons(...settingButtons),
-			buttons(
-				button(
-					controlId('upload'),
-					references.length ? 'Replace files' : 'Reference files'
+	return panelSections([
+		{
+			accentColor: questionAccentColor,
+			text: `-# Question ${questionIndex + 1} of ${form.data.questions.length} · ${typeLabel} · ${question.required ? 'Required' : 'Optional'}\n${questionHeading(question.prompt)}`
+		},
+		{
+			text: `${details}**Reference files:** ${fileLinks || 'None'}\n-# Changes stay in the draft until you publish.`
+		},
+		{
+			rows: [
+				buttons(...settingButtons),
+				buttons(
+					button(
+						controlId('upload'),
+						references.length ? 'Replace files' : 'Reference files'
+					),
+					...(references.length ? [button(controlId('clear'), 'Remove files')] : [])
 				),
-				...(references.length ? [button(controlId('clear'), 'Remove files')] : [])
-			),
-			buttons(
-				button(`zf:m:${form.id}:${actorId}:preview`, 'Preview form'),
-				button(`zf:m:${form.id}:${actorId}:back`, 'Back to form')
-			)
-		]
-	);
+				buttons(
+					button(`zf:m:${form.id}:${actorId}:preview`, 'Preview form'),
+					button(`zf:m:${form.id}:${actorId}:back`, 'Back to form')
+				)
+			]
+		}
+	]);
 }
 
 export class QuestionEditor {

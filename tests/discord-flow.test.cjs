@@ -919,7 +919,7 @@ test('question editor changes one setting at a time on one management message', 
 	assert.match(JSON.stringify(componentTree(editor.message.payload)), /Edit wording/);
 	assert.match(
 		JSON.stringify(componentTree(editor.message.payload)),
-		/> 4\. Time zone\?\\n> City is fine\\n\\n\*\*Answer:\*\* 3–2000 characters/
+		/### Time zone\?\\nCity is fine/
 	);
 
 	const staleControl = controlId(editor.message.payload, 'Make optional');
