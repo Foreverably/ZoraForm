@@ -2,11 +2,12 @@ import { ApplyOptions } from '@sapphire/decorators';
 import { Command } from '@sapphire/framework';
 import { ChannelType, InteractionContextType, MessageFlags, PermissionFlagsBits } from 'discord.js';
 import { and, eq, desc } from 'drizzle-orm';
-import { formsRuntime, explainFormError } from '../../modules/forms/runtime';
-import { requireFormAdmin } from '../../modules/forms/builder';
-import { managePanel, panel, safe } from '../../modules/forms/views';
+import { formsRuntime } from '../../modules/forms/runtime';
+import { explainFormError } from '../../modules/forms/discord/components';
+import { requireFormAdmin } from '../../modules/forms/discord/form-builder';
+import { managePanel, panel, safe } from '../../modules/forms/discord/components';
 import { submissions } from '../../database/schema';
-import { FormError } from '../../modules/forms/model';
+import { FormError } from '../../modules/forms/domain/rules';
 
 @ApplyOptions<Command.Options>({ description: 'Create and manage ZoraForms questionnaires.' })
 export class FormCommand extends Command {
@@ -120,7 +121,7 @@ export class FormCommand extends Command {
 			if (action === 'create') {
 				const reviewChannel = interaction.options.getChannel('review-channel', true);
 				const reviewer = interaction.options.getUser('reviewer', true);
-				const form = await runtime.engine.createForm(guild.id, interaction.user.id, {
+				const form = await runtime.formService.createForm(guild.id, interaction.user.id, {
 					name: interaction.options.getString('name', true),
 					reviewChannelId: reviewChannel.id,
 					reviewerIds: [reviewer.id]
@@ -130,7 +131,7 @@ export class FormCommand extends Command {
 			}
 
 			if (action === 'list') {
-				const serverForms = await runtime.engine.listForms(guild.id);
+				const serverForms = await runtime.formService.listForms(guild.id);
 				const description = serverForms
 					.slice(0, 20)
 					.map(
@@ -147,7 +148,7 @@ export class FormCommand extends Command {
 			}
 
 			if (action === 'blacklist') {
-				await runtime.engine.setGuildBlacklist(
+				await runtime.formService.setGuildBlacklist(
 					guild.id,
 					interaction.user.id,
 					interaction.options.getUser('user', true).id,
@@ -168,14 +169,16 @@ export class FormCommand extends Command {
 				return;
 			}
 
-			const form = await runtime.engine.findForm(interaction.options.getString('id', true));
+			const form = await runtime.formService.findForm(
+				interaction.options.getString('id', true)
+			);
 
 			if (form.guildId !== guild.id) {
 				throw new FormError('This form belongs to another server.');
 			}
 
 			if (action === 'archive') {
-				await runtime.engine.archiveForm(form.id, guild.id, interaction.user.id);
+				await runtime.formService.archiveForm(form.id, guild.id, interaction.user.id);
 				await interaction.editReply(
 					'Form archived. It is no longer available in the DM directory.'
 				);
@@ -183,7 +186,7 @@ export class FormCommand extends Command {
 			}
 
 			if (action === 'submissions') {
-				const recentSubmissions = await runtime.engine.database
+				const recentSubmissions = await runtime.formService.database
 					.select()
 					.from(submissions)
 					.where(and(eq(submissions.formId, form.id), eq(submissions.guildId, guild.id)))

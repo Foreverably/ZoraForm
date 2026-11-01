@@ -1,3 +1,5 @@
+import { ZodError } from 'zod';
+import { FormError } from '../domain/rules';
 import {
 	ActionRowBuilder,
 	ButtonBuilder,
@@ -8,7 +10,7 @@ import {
 	TextDisplayBuilder,
 	escapeMarkdown
 } from 'discord.js';
-import type { QuestionAnswer, FormRecord, QuestionnaireSession } from './model';
+import type { QuestionAnswer, FormRecord, QuestionnaireSession } from '../domain/types';
 
 export type Row = ActionRowBuilder<ButtonBuilder> | ActionRowBuilder<StringSelectMenuBuilder>;
 
@@ -165,4 +167,22 @@ export function managePanel(form: FormRecord, actor: string) {
 			)
 		]
 	);
+}
+
+export function explainFormError(error: unknown) {
+	if (error instanceof FormError) {
+		return error.message;
+	}
+
+	if (error instanceof ZodError) {
+		return error.issues
+			.map((issue) => `${issue.path.join('.') || 'Configuration'}: ${issue.message}`)
+			.slice(0, 3)
+			.join('\n');
+	}
+
+	console.error(
+		'A form operation failed. Applicant answers and credentials have not been logged.'
+	);
+	return 'This could not be completed right now. Your saved progress is safe. Please retry.';
 }

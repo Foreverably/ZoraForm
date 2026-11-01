@@ -3,9 +3,10 @@ import { randomUUID } from 'node:crypto';
 import { resolve, join } from 'node:path';
 import type { Attachment } from 'discord.js';
 import { eq } from 'drizzle-orm';
-import { files } from '../../database/schema';
-import type { Database } from '../../database/database';
-import { FormError, type StoredAttachment } from './model';
+import { files } from '../../../database/schema';
+import type { Database } from '../../../database/database';
+import { FormError } from '../domain/rules';
+import type { StoredAttachment } from '../domain/types';
 
 export class AttachmentStorage {
 	public readonly directory: string;

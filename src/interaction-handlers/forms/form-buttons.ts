@@ -1,6 +1,6 @@
 import { InteractionHandler, InteractionHandlerTypes } from '@sapphire/framework';
 import type { ButtonInteraction } from 'discord.js';
-import { routeFormInteraction } from '../../modules/forms/interaction-router';
+import { routeFormInteraction } from '../../modules/forms/discord/interaction-router';
 
 export class FormButtonHandler extends InteractionHandler {
 	public constructor(

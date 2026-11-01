@@ -1,6 +1,7 @@
 import { Listener, Events } from '@sapphire/framework';
 import type { Message } from 'discord.js';
-import { formsRuntime, explainFormError } from '../../modules/forms/runtime';
+import { formsRuntime } from '../../modules/forms/runtime';
+import { explainFormError } from '../../modules/forms/discord/components';
 
 export class DirectMessageListener extends Listener<typeof Events.MessageCreate> {
 	public override async run(message: Message) {

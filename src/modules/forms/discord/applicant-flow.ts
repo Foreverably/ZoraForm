@@ -8,16 +8,17 @@ import {
 	type StringSelectMenuInteraction
 } from 'discord.js';
 import { eq, desc } from 'drizzle-orm';
-import { submissions } from '../../database/schema';
-import { FormEngine } from './engine';
-import { AttachmentStorage } from './storage';
-import { FormError, type QuestionnaireSession } from './model';
-import { panel, buttons, button, safe, summary } from './views';
+import { submissions } from '../../../database/schema';
+import { FormService } from '../services/form-service';
+import { AttachmentStorage } from '../services/attachment-storage';
+import { FormError } from '../domain/rules';
+import type { QuestionnaireSession } from '../domain/types';
+import { panel, buttons, button, safe, summary } from './components';
 
 export class ApplicantFlow {
 	public constructor(
 		private readonly client: Client,
-		private readonly engine: FormEngine,
+		private readonly formService: FormService,
 		private readonly storage: AttachmentStorage
 	) {}
 
@@ -46,7 +47,7 @@ export class ApplicantFlow {
 		const availableForms = [];
 		const guildRoles = new Map<string, Awaited<ReturnType<ApplicantFlow['memberRoles']>>>();
 
-		for (const form of await this.engine.listForms()) {
+		for (const form of await this.formService.listForms()) {
 			if (!form.published) {
 				continue;
 			}
@@ -56,7 +57,7 @@ export class ApplicantFlow {
 			}
 
 			try {
-				await this.engine.assertEligibility(
+				await this.formService.assertEligibility(
 					form,
 					userId,
 					guildRoles.get(form.guildId) ?? null
@@ -127,7 +128,7 @@ export class ApplicantFlow {
 			return;
 		}
 
-		const session = await this.engine.findActiveSession(message.author.id);
+		const session = await this.formService.findActiveSession(message.author.id);
 
 		if (!session) {
 			await message.channel.send(await this.directory(message.author.id));
@@ -150,8 +151,8 @@ export class ApplicantFlow {
 		}
 
 		const memberRoleIds = await this.memberRoles(session.guildId, message.author.id);
-		const currentForm = await this.engine.findForm(session.formId);
-		await this.engine.assertEligibility(currentForm, message.author.id, memberRoleIds);
+		const currentForm = await this.formService.findForm(session.formId);
+		await this.formService.assertEligibility(currentForm, message.author.id, memberRoleIds);
 
 		if (question.type !== 'attachment' && message.attachments.size) {
 			throw new FormError('This question expects a written answer.');
@@ -163,7 +164,7 @@ export class ApplicantFlow {
 				: [];
 
 		try {
-			const answerSaved = await this.engine.saveAnswer(
+			const answerSaved = await this.formService.saveAnswer(
 				session.id,
 				message.author.id,
 				session.version,
@@ -193,7 +194,7 @@ export class ApplicantFlow {
 
 		if (segments[1] === 'directory') {
 			if (segments[2] === 'status') {
-				const recentSubmissions = await this.engine.database
+				const recentSubmissions = await this.formService.database
 					.select()
 					.from(submissions)
 					.where(eq(submissions.userId, interaction.user.id))
@@ -218,8 +219,8 @@ export class ApplicantFlow {
 					throw new FormError('Choose a form.');
 				}
 
-				const form = await this.engine.findForm(formId);
-				await this.engine.startSession(
+				const form = await this.formService.findForm(formId);
+				await this.formService.startSession(
 					formId,
 					interaction.user.id,
 					await this.memberRoles(form.guildId, interaction.user.id)
@@ -239,7 +240,7 @@ export class ApplicantFlow {
 		const sessionId = segments[2]!;
 		const version = Number(segments[3]);
 		const action = segments[4];
-		const session = await this.engine.findSession(sessionId);
+		const session = await this.formService.findSession(sessionId);
 
 		if (session.userId !== interaction.user.id || session.version !== version) {
 			throw new FormError(
@@ -272,8 +273,8 @@ export class ApplicantFlow {
 			if (session.status !== 'confirm') {
 				throw new FormError('Finish your answers before reviewing them.');
 			}
-			await this.engine.assertEligibility(
-				await this.engine.findForm(session.formId),
+			await this.formService.assertEligibility(
+				await this.formService.findForm(session.formId),
 				interaction.user.id,
 				roles
 			);
@@ -284,7 +285,7 @@ export class ApplicantFlow {
 		}
 
 		if (action === 'submit') {
-			const submission = await this.engine.submitSession(
+			const submission = await this.formService.submitSession(
 				session.id,
 				interaction.user.id,
 				version,
@@ -310,7 +311,7 @@ export class ApplicantFlow {
 				throw new FormError('Choose one of the listed answers.');
 			}
 
-			await this.engine.saveAnswer(
+			await this.formService.saveAnswer(
 				session.id,
 				interaction.user.id,
 				version,
@@ -323,7 +324,7 @@ export class ApplicantFlow {
 		}
 
 		if (action === 'edit') {
-			await this.engine.editAnswerPosition(
+			await this.formService.editAnswerPosition(
 				session.id,
 				interaction.user.id,
 				version,
@@ -346,7 +347,7 @@ export class ApplicantFlow {
 			throw new FormError('Unknown questionnaire action.');
 		}
 
-		await this.engine.navigateSession(
+		await this.formService.navigateSession(
 			session.id,
 			interaction.user.id,
 			version,

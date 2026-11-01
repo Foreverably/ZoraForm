@@ -1,6 +1,6 @@
 import { InteractionHandler, InteractionHandlerTypes } from '@sapphire/framework';
 import type { ModalSubmitInteraction } from 'discord.js';
-import { routeFormInteraction } from '../../modules/forms/interaction-router';
+import { routeFormInteraction } from '../../modules/forms/discord/interaction-router';
 
 export class FormModalHandler extends InteractionHandler {
 	public constructor(

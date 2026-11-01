@@ -1,10 +1,11 @@
 import { ChannelType, PermissionFlagsBits, type Client, type TextChannel } from 'discord.js';
 import { and, eq, lte, inArray, ne } from 'drizzle-orm';
-import { jobs, sessions, submissions, files, processedInputs } from '../../database/schema';
-import { FormEngine } from './engine';
-import { AttachmentStorage } from './storage';
-import { FormError, type FormConfiguration, type DeliveryJob } from './model';
-import { panel, prompt, buttons, button, answerPages, safe } from './views';
+import { jobs, sessions, submissions, files, processedInputs } from '../../../database/schema';
+import { FormService } from '../services/form-service';
+import { AttachmentStorage } from '../services/attachment-storage';
+import { FormError } from '../domain/rules';
+import type { FormConfiguration, DeliveryJob } from '../domain/types';
+import { panel, prompt, buttons, button, answerPages, safe } from './components';
 
 export class DiscordDelivery {
 	private interval: NodeJS.Timeout | undefined;
@@ -13,7 +14,7 @@ export class DiscordDelivery {
 
 	public constructor(
 		private readonly client: Client,
-		private readonly engine: FormEngine,
+		private readonly formService: FormService,
 		private readonly storage: AttachmentStorage
 	) {}
 
@@ -91,7 +92,7 @@ export class DiscordDelivery {
 
 		try {
 			for (let deliveryCount = 0; deliveryCount < 10; deliveryCount++) {
-				const deliveryJob = await this.engine.claimDeliveryJob();
+				const deliveryJob = await this.formService.claimDeliveryJob();
 
 				if (!deliveryJob) {
 					break;
@@ -99,7 +100,7 @@ export class DiscordDelivery {
 
 				try {
 					await this.deliver(deliveryJob);
-					await this.engine.database.delete(jobs).where(eq(jobs.id, deliveryJob.id));
+					await this.formService.database.delete(jobs).where(eq(jobs.id, deliveryJob.id));
 				} catch (error) {
 					const errorCode =
 						error instanceof FormError
@@ -110,7 +111,7 @@ export class DiscordDelivery {
 						10000 * 2 ** Math.min(deliveryJob.attempts, 8)
 					);
 
-					await this.engine.database
+					await this.formService.database
 						.update(jobs)
 						.set({
 							leaseUntil: null,
@@ -150,7 +151,7 @@ export class DiscordDelivery {
 	}
 
 	private async deliverPrompt(deliveryJob: DeliveryJob) {
-		const session = await this.engine.findSession(deliveryJob.payload.id);
+		const session = await this.formService.findSession(deliveryJob.payload.id);
 
 		if (
 			session.status !== 'prompt' ||
@@ -182,7 +183,7 @@ export class DiscordDelivery {
 			questionMessage = await directMessages.send(content);
 		}
 
-		await this.engine.database
+		await this.formService.database
 			.update(sessions)
 			.set({
 				promptId: questionMessage.id,
@@ -239,7 +240,7 @@ export class DiscordDelivery {
 	}
 
 	private async deliverReview(submissionId: string) {
-		const submission = await this.engine.findSubmission(submissionId);
+		const submission = await this.formService.findSubmission(submissionId);
 
 		if (
 			submission.deliveryState === 'ready' ||
@@ -249,7 +250,7 @@ export class DiscordDelivery {
 			return;
 		}
 
-		const currentForm = await this.engine.findForm(submission.formId);
+		const currentForm = await this.formService.findForm(submission.formId);
 		const reviewConfiguration = {
 			...submission.snapshot,
 			reviewerIds: currentForm.data.reviewerIds
@@ -266,7 +267,7 @@ export class DiscordDelivery {
 				);
 			}
 
-			await this.engine.database
+			await this.formService.database
 				.update(submissions)
 				.set({ deliveryState: 'creating' })
 				.where(eq(submissions.id, submission.id));
@@ -284,7 +285,7 @@ export class DiscordDelivery {
 			);
 		}
 
-		await this.engine.database
+		await this.formService.database
 			.update(submissions)
 			.set({ threadId: thread.id, deliveryState: 'posting' })
 			.where(eq(submissions.id, submission.id));
@@ -360,14 +361,14 @@ export class DiscordDelivery {
 			);
 		}
 
-		await this.engine.database
+		await this.formService.database
 			.update(submissions)
 			.set({ deliveryState: 'ready', snapshot: reviewConfiguration })
 			.where(eq(submissions.id, submission.id));
 	}
 
 	private async deliverDecision(submissionId: string) {
-		const submission = await this.engine.findSubmission(submissionId);
+		const submission = await this.formService.findSubmission(submissionId);
 		const applicant = await this.client.users.fetch(submission.userId);
 		const channel = await applicant.createDM();
 		const marker = `zf-decision:${submission.id}`;
@@ -389,7 +390,7 @@ export class DiscordDelivery {
 	}
 
 	private async archiveReview(submissionId: string) {
-		const submission = await this.engine.findSubmission(submissionId);
+		const submission = await this.formService.findSubmission(submissionId);
 
 		if (!submission.threadId || submission.status === 'pending' || submission.archived) {
 			return;
@@ -411,7 +412,7 @@ export class DiscordDelivery {
 		);
 		await thread.setLocked(true);
 		await thread.setArchived(true);
-		await this.engine.database
+		await this.formService.database
 			.update(submissions)
 			.set({ archived: true })
 			.where(eq(submissions.id, submission.id));
@@ -423,7 +424,7 @@ export class DiscordDelivery {
 		actorId: string,
 		allowRecreate: boolean
 	) {
-		const submission = await this.engine.findSubmission(submissionId);
+		const submission = await this.formService.findSubmission(submissionId);
 
 		if (submission.guildId !== guildId || submission.status !== 'pending') {
 			throw new FormError('Choose a pending submission from this server.');
@@ -438,7 +439,7 @@ export class DiscordDelivery {
 			);
 		}
 
-		await this.engine.database.transaction(async (database) => {
+		await this.formService.database.transaction(async (database) => {
 			await database
 				.update(submissions)
 				.set({
@@ -447,8 +448,8 @@ export class DiscordDelivery {
 				})
 				.where(eq(submissions.id, submission.id));
 			await database.delete(jobs).where(eq(jobs.dedupe, `review:${submission.id}:0`));
-			await this.engine.enqueueDelivery(database, 'review', submission.id);
-			await this.engine.recordAuditEvent(
+			await this.formService.enqueueDelivery(database, 'review', submission.id);
+			await this.formService.recordAuditEvent(
 				database,
 				guildId,
 				actorId,
@@ -459,13 +460,13 @@ export class DiscordDelivery {
 	}
 
 	private async reconcileReviewers() {
-		const openReviews = await this.engine.database
+		const openReviews = await this.formService.database
 			.select()
 			.from(submissions)
 			.where(and(eq(submissions.status, 'pending'), eq(submissions.deliveryState, 'ready')));
 
 		for (const submission of openReviews) {
-			const form = await this.engine.findForm(submission.formId);
+			const form = await this.formService.findForm(submission.formId);
 			const previousReviewers = submission.snapshot.reviewerIds;
 			const currentReviewers = form.data.reviewerIds;
 
@@ -499,7 +500,7 @@ export class DiscordDelivery {
 					await thread.members.add(reviewerId);
 				}
 
-				await this.engine.database
+				await this.formService.database
 					.update(submissions)
 					.set({ snapshot: { ...submission.snapshot, reviewerIds: currentReviewers } })
 					.where(eq(submissions.id, submission.id));
@@ -511,7 +512,7 @@ export class DiscordDelivery {
 
 	private async cleanup() {
 		await this.reconcileReviewers();
-		await this.engine.database
+		await this.formService.database
 			.update(sessions)
 			.set({ status: 'expired' })
 			.where(
@@ -520,7 +521,7 @@ export class DiscordDelivery {
 					inArray(sessions.status, ['prompt', 'answer', 'confirm', 'paused'])
 				)
 			);
-		const expiredSubmissions = await this.engine.database
+		const expiredSubmissions = await this.formService.database
 			.select()
 			.from(submissions)
 			.where(
@@ -549,7 +550,7 @@ export class DiscordDelivery {
 				}
 			}
 
-			await this.engine.database.transaction(async (database) => {
+			await this.formService.database.transaction(async (database) => {
 				await database
 					.update(submissions)
 					.set({
@@ -568,7 +569,7 @@ export class DiscordDelivery {
 			});
 		}
 
-		const expiredDrafts = await this.engine.database
+		const expiredDrafts = await this.formService.database
 			.select()
 			.from(sessions)
 			.where(
@@ -581,19 +582,19 @@ export class DiscordDelivery {
 			.limit(100);
 
 		for (const session of expiredDrafts) {
-			await this.engine.database
+			await this.formService.database
 				.update(sessions)
 				.set({ answers: [], snapshot: { ...session.snapshot, questions: [] } })
 				.where(eq(sessions.id, session.id));
 		}
 
-		const expiredFiles = await this.engine.database
+		const expiredFiles = await this.formService.database
 			.select()
 			.from(files)
 			.where(lte(files.expiresAt, new Date()))
 			.limit(100);
 		await this.storage.remove(expiredFiles);
-		await this.engine.database
+		await this.formService.database
 			.delete(processedInputs)
 			.where(lte(processedInputs.createdAt, new Date(Date.now() - 30 * 86400000)));
 	}

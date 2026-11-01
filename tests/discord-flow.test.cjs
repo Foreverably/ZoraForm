@@ -10,14 +10,19 @@ const { migrate } = require('drizzle-orm/pglite/migrator');
 const { Collection, ChannelType, PermissionFlagsBits, MessageFlags } = require('discord.js');
 const { eq } = require('drizzle-orm');
 const schema = require('../dist/database/schema');
-const { FormEngine } = require('../dist/modules/forms/engine');
-const { ApplicantFlow } = require('../dist/modules/forms/applicant-flow');
-const { DiscordDelivery } = require('../dist/modules/forms/delivery');
-const { AttachmentStorage } = require('../dist/modules/forms/storage');
-const { FormBuilder } = require('../dist/modules/forms/builder');
-const { formQuestionSchema } = require('../dist/modules/forms/model');
-const { prompt, summary, managePanel, answerPages } = require('../dist/modules/forms/views');
-let database, engine, postgres, directory;
+const { FormService } = require('../dist/modules/forms/services/form-service');
+const { ApplicantFlow } = require('../dist/modules/forms/discord/applicant-flow');
+const { DiscordDelivery } = require('../dist/modules/forms/discord/delivery-worker');
+const { AttachmentStorage } = require('../dist/modules/forms/services/attachment-storage');
+const { FormBuilder } = require('../dist/modules/forms/discord/form-builder');
+const { formQuestionSchema } = require('../dist/modules/forms/domain/schemas');
+const {
+	prompt,
+	summary,
+	managePanel,
+	answerPages
+} = require('../dist/modules/forms/discord/components');
+let database, formService, postgres, directory;
 const guildId = '12345678901234567';
 const reviewerId = '12345678901234568';
 const reviewChannelId = '12345678901234569';
@@ -26,7 +31,7 @@ before(async () => {
 	postgres = new PGlite();
 	database = drizzle(postgres, { schema });
 	await migrate(database, { migrationsFolder: './drizzle' });
-	engine = new FormEngine(database);
+	formService = new FormService(database);
 	directory = await mkdtemp(join(tmpdir(), 'zoraforms-test-'));
 });
 after(async () => {
@@ -144,8 +149,8 @@ function mockDiscord() {
 async function setupFlow() {
 	const discord = mockDiscord();
 	const storage = new AttachmentStorage(database, directory);
-	const delivery = new DiscordDelivery(discord.client, engine, storage);
-	const applicant = new ApplicantFlow(discord.client, engine, storage);
+	const delivery = new DiscordDelivery(discord.client, formService, storage);
+	const applicant = new ApplicantFlow(discord.client, formService, storage);
 	const userId = randomUUID();
 	const question = formQuestionSchema.parse({
 		id: randomUUID(),
@@ -153,20 +158,20 @@ async function setupFlow() {
 		prompt: 'Why join?',
 		min: 3
 	});
-	const form = await engine.createForm(guildId, reviewerId, {
+	const form = await formService.createForm(guildId, reviewerId, {
 		name: 'Test application',
 		reviewChannelId,
 		reviewerIds: [reviewerId],
 		questions: [question]
 	});
-	await engine.publishForm(form.id, guildId, reviewerId, form.data.revision);
+	await formService.publishForm(form.id, guildId, reviewerId, form.data.revision);
 	return { discord, storage, delivery, applicant, userId, form };
 }
 
 async function finishAnswers(flow) {
-	await engine.startSession(flow.form.id, flow.userId, [guildId]);
+	await formService.startSession(flow.form.id, flow.userId, [guildId]);
 	await flow.delivery.tick();
-	const session = await engine.findActiveSession(flow.userId);
+	const session = await formService.findActiveSession(flow.userId);
 	assert.equal(session.status, 'answer');
 	const channel = await (await flow.discord.client.users.fetch(flow.userId)).createDM();
 	await flow.applicant.handleMessage({
@@ -178,7 +183,7 @@ async function finishAnswers(flow) {
 		reference: null
 	});
 	await flow.delivery.tick();
-	return engine.findActiveSession(flow.userId);
+	return formService.findActiveSession(flow.userId);
 }
 
 test('first DM opens eligible forms, then submission reaches a private review and archives after a decision', async () => {
@@ -191,7 +196,7 @@ test('first DM opens eligible forms, then submission reaches a private review an
 		content: 'hello',
 		attachments: new Collection()
 	});
-	assert.equal(await engine.findActiveSession(flow.userId), null);
+	assert.equal(await formService.findActiveSession(flow.userId), null);
 	assert.match(
 		JSON.stringify([
 			...(channel.messages.fetch ? (await channel.messages.fetch()).values() : [])
@@ -200,14 +205,14 @@ test('first DM opens eligible forms, then submission reaches a private review an
 	);
 	const confirmation = await finishAnswers(flow);
 	assert.equal(confirmation.status, 'confirm');
-	const submission = await engine.submitSession(
+	const submission = await formService.submitSession(
 		confirmation.id,
 		flow.userId,
 		confirmation.version,
 		[guildId]
 	);
 	await flow.delivery.tick();
-	const delivered = await engine.findSubmission(submission.id);
+	const delivered = await formService.findSubmission(submission.id);
 	assert.equal(delivered.deliveryState, 'ready');
 	const thread = flow.discord.channels.get(delivered.threadId);
 	assert.equal(thread.type, ChannelType.PrivateThread);
@@ -215,22 +220,28 @@ test('first DM opens eligible forms, then submission reaches a private review an
 		flow.discord.operations.filter((operation) => operation === 'create-thread').length,
 		1
 	);
-	await engine.recordDecision(submission.id, reviewerId, thread.id, 'accepted', 'Welcome aboard');
+	await formService.recordDecision(
+		submission.id,
+		reviewerId,
+		thread.id,
+		'accepted',
+		'Welcome aboard'
+	);
 	await flow.delivery.tick();
-	const archived = await engine.findSubmission(submission.id);
+	const archived = await formService.findSubmission(submission.id);
 	assert.equal(archived.status, 'accepted');
 	assert.equal(archived.archived, true);
 	assert.equal(thread.archived, true);
 	assert.equal(thread.locked, true);
 	assert.match(JSON.stringify([...(await channel.messages.fetch()).values()]), /Welcome aboard/);
-	await engine.archiveForm(flow.form.id, guildId, reviewerId);
-	assert.equal((await engine.findForm(flow.form.id)).archived, true);
+	await formService.archiveForm(flow.form.id, guildId, reviewerId);
+	assert.equal((await formService.findForm(flow.form.id)).archived, true);
 });
 
 test('lost thread-creation response is reconciled without creating a second thread', async () => {
 	const flow = await setupFlow();
 	const confirmation = await finishAnswers(flow);
-	const submission = await engine.submitSession(
+	const submission = await formService.submitSession(
 		confirmation.id,
 		flow.userId,
 		confirmation.version,
@@ -238,13 +249,13 @@ test('lost thread-creation response is reconciled without creating a second thre
 	);
 	flow.discord.loseNextCreationResponse();
 	await flow.delivery.tick();
-	assert.equal((await engine.findSubmission(submission.id)).deliveryState, 'creating');
+	assert.equal((await formService.findSubmission(submission.id)).deliveryState, 'creating');
 	await database
 		.update(schema.jobs)
 		.set({ nextAttemptAt: new Date(0) })
 		.where(eq(schema.jobs.dedupe, `review:${submission.id}:0`));
 	await flow.delivery.tick();
-	assert.equal((await engine.findSubmission(submission.id)).deliveryState, 'ready');
+	assert.equal((await formService.findSubmission(submission.id)).deliveryState, 'ready');
 	assert.equal(
 		flow.discord.operations.filter((operation) => operation === 'create-thread').length,
 		1
@@ -253,7 +264,7 @@ test('lost thread-creation response is reconciled without creating a second thre
 
 test('all question panels, long summaries and maximum-size builder panels validate as Components V2', async () => {
 	const flow = await setupFlow();
-	const session = await engine.startSession(flow.form.id, flow.userId, []);
+	const session = await formService.startSession(flow.form.id, flow.userId, []);
 	const questionTypes = [
 		{ type: 'text', min: 1, max: 2000 },
 		{ type: 'number', min: 0, max: 100 },
@@ -315,7 +326,7 @@ test('all question panels, long summaries and maximum-size builder panels valida
 			'12345678901234567890'
 		)
 	);
-	const builder = new FormBuilder(engine, flow.delivery);
+	const builder = new FormBuilder(formService, flow.delivery);
 	for (const specification of questionTypes) {
 		const formModal = builder.questionModal(
 			flow.form.id,
@@ -330,7 +341,7 @@ test('all question panels, long summaries and maximum-size builder panels valida
 
 test('attachment contents are saved privately and deleted when their answer is rejected', async () => {
 	const flow = await setupFlow();
-	const session = await engine.startSession(flow.form.id, flow.userId, []);
+	const session = await formService.startSession(flow.form.id, flow.userId, []);
 	const originalFetch = global.fetch;
 	global.fetch = async () => new Response('sample text file');
 	try {
@@ -356,7 +367,7 @@ test('attachment contents are saved privately and deleted when their answer is r
 
 test('cancelled drafts remove stored attachments during retention cleanup', async () => {
 	const flow = await setupFlow();
-	const session = await engine.startSession(flow.form.id, flow.userId, []);
+	const session = await formService.startSession(flow.form.id, flow.userId, []);
 	const originalFetch = global.fetch;
 	global.fetch = async () => new Response('private draft');
 	let attachments;
@@ -367,36 +378,36 @@ test('cancelled drafts remove stored attachments during retention cleanup', asyn
 	} finally {
 		global.fetch = originalFetch;
 	}
-	await engine.navigateSession(session.id, flow.userId, session.version, null, 'cancel');
+	await formService.navigateSession(session.id, flow.userId, session.version, null, 'cancel');
 	await flow.delivery.cleanup();
 	await assert.rejects(readFile(flow.storage.path(attachments[0].key)), { code: 'ENOENT' });
-	assert.equal((await engine.findSession(session.id)).answers.length, 0);
+	assert.equal((await formService.findSession(session.id)).answers.length, 0);
 });
 
 test('submission retention removes the private thread and answer copies while preserving policy history', async () => {
 	const flow = await setupFlow();
 	const confirmation = await finishAnswers(flow);
-	const submission = await engine.submitSession(
+	const submission = await formService.submitSession(
 		confirmation.id,
 		flow.userId,
 		confirmation.version,
 		[guildId]
 	);
 	await flow.delivery.tick();
-	const delivered = await engine.findSubmission(submission.id);
+	const delivered = await formService.findSubmission(submission.id);
 	assert.ok(flow.discord.channels.has(delivered.threadId));
 	await database
 		.update(schema.submissions)
 		.set({ expiresAt: new Date(0) })
 		.where(eq(schema.submissions.id, submission.id));
 	await flow.delivery.cleanup();
-	const retainedRecord = await engine.findSubmission(submission.id);
+	const retainedRecord = await formService.findSubmission(submission.id);
 	assert.equal(retainedRecord.deliveryState, 'purged');
 	assert.equal(retainedRecord.status, 'rejected');
 	assert.deepEqual(retainedRecord.answers, []);
 	assert.equal(flow.discord.channels.has(delivered.threadId), false);
-	assert.deepEqual((await engine.findSession(confirmation.id)).answers, []);
-	await engine.startSession(flow.form.id, flow.userId, [guildId]);
+	assert.deepEqual((await formService.findSession(confirmation.id)).answers, []);
+	await formService.startSession(flow.form.id, flow.userId, [guildId]);
 });
 
 test('Sapphire discovers the form command, DM listener and all component handlers', async () => {
@@ -446,7 +457,7 @@ test('Sapphire discovers the form command, DM listener and all component handler
 
 test('text, choice, number and attachment answers survive the complete questionnaire and review flow', async () => {
 	const flow = await setupFlow();
-	await engine.editFormDraft(flow.form.id, guildId, reviewerId, (configuration) => ({
+	await formService.editFormDraft(flow.form.id, guildId, reviewerId, (configuration) => ({
 		...configuration,
 		questions: [
 			configuration.questions[0],
@@ -471,9 +482,9 @@ test('text, choice, number and attachment answers survive the complete questionn
 			})
 		]
 	}));
-	const editedForm = await engine.findForm(flow.form.id);
-	await engine.publishForm(flow.form.id, guildId, reviewerId, editedForm.data.revision);
-	await engine.startSession(flow.form.id, flow.userId, [guildId]);
+	const editedForm = await formService.findForm(flow.form.id);
+	await formService.publishForm(flow.form.id, guildId, reviewerId, editedForm.data.revision);
+	await formService.startSession(flow.form.id, flow.userId, [guildId]);
 	const channel = await (await flow.discord.client.users.fetch(flow.userId)).createDM();
 	const sendAnswer = (content, attachments = new Collection()) =>
 		flow.applicant.handleMessage({
@@ -487,7 +498,7 @@ test('text, choice, number and attachment answers survive the complete questionn
 	await flow.delivery.tick();
 	await sendAnswer('I like helping people.');
 	await flow.delivery.tick();
-	const choiceSession = await engine.findActiveSession(flow.userId);
+	const choiceSession = await formService.findActiveSession(flow.userId);
 	await flow.applicant.handleInteraction({
 		customId: `zf:s:${choiceSession.id}:${choiceSession.version}:choice`,
 		id: flow.discord.id(),
@@ -521,22 +532,22 @@ test('text, choice, number and attachment answers survive the complete questionn
 		global.fetch = originalFetch;
 	}
 	await flow.delivery.tick();
-	const confirmation = await engine.findActiveSession(flow.userId);
+	const confirmation = await formService.findActiveSession(flow.userId);
 	assert.equal(confirmation.status, 'confirm');
 	assert.deepEqual(confirmation.answers.slice(0, 3), ['I like helping people.', 'Evening', 12]);
 	assert.equal(confirmation.answers[3].length, 1);
-	const submission = await engine.submitSession(
+	const submission = await formService.submitSession(
 		confirmation.id,
 		flow.userId,
 		confirmation.version,
 		[guildId]
 	);
 	await flow.delivery.tick();
-	const reviewed = await engine.findSubmission(submission.id);
+	const reviewed = await formService.findSubmission(submission.id);
 	const thread = flow.discord.channels.get(reviewed.threadId);
 	const reviewMessages = [...(await thread.messages.fetch()).values()];
 	assert.equal(reviewMessages.filter((message) => message.payload.files?.length).length, 1);
-	await engine.recordDecision(
+	await formService.recordDecision(
 		submission.id,
 		reviewerId,
 		thread.id,
@@ -544,5 +555,5 @@ test('text, choice, number and attachment answers survive the complete questionn
 		'Please apply again next round.'
 	);
 	await flow.delivery.tick();
-	assert.equal((await engine.findSubmission(submission.id)).archived, true);
+	assert.equal((await formService.findSubmission(submission.id)).archived, true);
 });

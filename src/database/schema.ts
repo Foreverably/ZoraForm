@@ -16,7 +16,7 @@ import type {
 	QuestionAnswer,
 	QuestionnaireSession,
 	DeliveryJob
-} from '../modules/forms/model';
+} from '../modules/forms/domain/types';
 
 export const forms = pgTable(
 	'forms',

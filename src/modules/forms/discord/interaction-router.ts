@@ -8,8 +8,9 @@ import {
 	type StringSelectMenuInteraction,
 	type ModalSubmitInteraction
 } from 'discord.js';
-import { formsRuntime, explainFormError } from './runtime';
-import { FormError } from './model';
+import { formsRuntime } from '../runtime';
+import { explainFormError } from './components';
+import { FormError } from '../domain/rules';
 
 type FormInteraction = ButtonInteraction | StringSelectMenuInteraction | ModalSubmitInteraction;
 
@@ -20,8 +21,8 @@ export async function routeFormInteraction(interaction: FormInteraction) {
 
 		if (route === 'r') {
 			const [, , submissionId, decision] = interaction.customId.split(':');
-			const submission = await runtime.engine.findSubmission(submissionId!);
-			const form = await runtime.engine.findForm(submission.formId);
+			const submission = await runtime.formService.findSubmission(submissionId!);
+			const form = await runtime.formService.findForm(submission.formId);
 
 			if (
 				!interaction.channelId ||
@@ -65,7 +66,7 @@ export async function routeFormInteraction(interaction: FormInteraction) {
 			}
 
 			await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-			await runtime.engine.recordDecision(
+			await runtime.formService.recordDecision(
 				submission.id,
 				interaction.user.id,
 				interaction.channelId,

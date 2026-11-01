@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { and, eq, gt, lte, inArray, or, isNull, sql, desc } from 'drizzle-orm';
-import type { Database, Queryable } from '../../database/database';
+import type { Database, Queryable } from '../../../database/database';
 import {
 	forms,
 	sessions,
@@ -11,22 +11,20 @@ import {
 	jobs,
 	processedInputs,
 	files
-} from '../../database/schema';
-import {
-	assertFormAccess,
-	FormError,
-	formConfigurationSchema,
-	validateQuestionAnswer,
-	type StoredAttachment,
-	type FormRecord,
-	type FormConfiguration,
-	type DeliveryJob,
-	type QuestionnaireSession
-} from './model';
+} from '../../../database/schema';
+import { assertFormAccess, FormError, validateQuestionAnswer } from '../domain/rules';
+import { formConfigurationSchema } from '../domain/schemas';
+import type {
+	StoredAttachment,
+	FormRecord,
+	FormConfiguration,
+	DeliveryJob,
+	QuestionnaireSession
+} from '../domain/types';
 const activeStates: QuestionnaireSession['status'][] = ['prompt', 'answer', 'confirm', 'paused'];
 const draftExpiry = () => new Date(Date.now() + 7 * 86400000);
 
-export class FormEngine {
+export class FormService {
 	public constructor(public readonly database: Database) {}
 
 	public async findForm(id: string, database: Queryable = this.database) {

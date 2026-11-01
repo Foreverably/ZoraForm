@@ -12,16 +12,12 @@ import {
 	type Guild
 } from 'discord.js';
 import { randomUUID } from 'node:crypto';
-import { FormEngine } from './engine';
-import { DiscordDelivery } from './delivery';
-import {
-	formQuestionSchema,
-	discordSnowflakeSchema,
-	FormError,
-	type FormConfiguration,
-	type FormQuestion
-} from './model';
-import { managePanel, panel, safe } from './views';
+import { FormService } from '../services/form-service';
+import { DiscordDelivery } from './delivery-worker';
+import { formQuestionSchema, discordSnowflakeSchema } from '../domain/schemas';
+import { FormError } from '../domain/rules';
+import type { FormConfiguration, FormQuestion } from '../domain/types';
+import { managePanel, panel, safe } from './components';
 
 type BuilderInteraction = ButtonInteraction | StringSelectMenuInteraction | ModalSubmitInteraction;
 interface ModalField {
@@ -77,7 +73,7 @@ export async function requireFormAdmin(guild: Guild | null, userId: string) {
 
 export class FormBuilder {
 	public constructor(
-		private readonly engine: FormEngine,
+		private readonly formService: FormService,
 		private readonly delivery: DiscordDelivery
 	) {}
 
@@ -91,7 +87,7 @@ export class FormBuilder {
 			throw new FormError('Open your own panel with /form manage.');
 		}
 
-		const form = await this.engine.findForm(formId);
+		const form = await this.formService.findForm(formId);
 
 		if (form.guildId !== guild.id) {
 			throw new FormError('This form belongs to another server.');
@@ -101,7 +97,7 @@ export class FormBuilder {
 			await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 			await this.saveModal(interaction, segments, form.data);
 			await interaction.editReply(
-				managePanel(await this.engine.findForm(formId), interaction.user.id)
+				managePanel(await this.formService.findForm(formId), interaction.user.id)
 			);
 			return;
 		}
@@ -138,7 +134,7 @@ export class FormBuilder {
 			}
 
 			await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-			await this.engine.editFormDraft(
+			await this.formService.editFormDraft(
 				formId,
 				guild.id,
 				interaction.user.id,
@@ -153,7 +149,7 @@ export class FormBuilder {
 				}
 			);
 			await interaction.editReply(
-				managePanel(await this.engine.findForm(formId), interaction.user.id)
+				managePanel(await this.formService.findForm(formId), interaction.user.id)
 			);
 			return;
 		}
@@ -332,14 +328,14 @@ export class FormBuilder {
 				}
 			}
 
-			await this.engine.publishForm(
+			await this.formService.publishForm(
 				formId,
 				guild.id,
 				interaction.user.id,
 				form.data.revision
 			);
 		} else if (action === 'archive') {
-			await this.engine.archiveForm(formId, guild.id, interaction.user.id);
+			await this.formService.archiveForm(formId, guild.id, interaction.user.id);
 		} else if (action === 'preview') {
 			const preview = form.data.questions
 				.slice(0, 10)
@@ -357,7 +353,7 @@ export class FormBuilder {
 		}
 
 		await interaction.editReply(
-			managePanel(await this.engine.findForm(formId), interaction.user.id)
+			managePanel(await this.formService.findForm(formId), interaction.user.id)
 		);
 	}
 
@@ -487,7 +483,7 @@ export class FormBuilder {
 					: {})
 			});
 
-			await this.engine.editFormDraft(
+			await this.formService.editFormDraft(
 				formId,
 				interaction.guildId!,
 				interaction.user.id,
@@ -510,7 +506,7 @@ export class FormBuilder {
 		const action = segments[4];
 		const revision = Number(segments[5]);
 
-		await this.engine.editFormDraft(
+		await this.formService.editFormDraft(
 			formId,
 			interaction.guildId!,
 			interaction.user.id,
