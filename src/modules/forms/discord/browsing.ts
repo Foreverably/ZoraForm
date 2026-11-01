@@ -24,10 +24,16 @@ export function pagination(requestedPage: number, total: number, size = pageSize
 }
 
 function navigation(prefix: string, page: number, pages: number) {
-	return buttons(
-		button(`${prefix}:${page - 1}`, 'Previous').setDisabled(page === 0),
-		button(`${prefix}:${page + 1}`, 'Next').setDisabled(page === pages - 1)
-	);
+	if (pages <= 1) {
+		return [];
+	}
+
+	return [
+		buttons(
+			button(`${prefix}:${page - 1}`, 'Previous').setDisabled(page === 0),
+			button(`${prefix}:${page + 1}`, 'Next').setDisabled(page === pages - 1)
+		)
+	];
 }
 
 export class FormBrowsing {
@@ -81,25 +87,26 @@ export class FormBrowsing {
 			.offset(offset);
 		const description = records
 			.map(
-				(form) =>
-					`${safe(form.data.name)} · ${form.archived ? 'archived' : form.published ? 'published' : 'draft'}\n${form.id}`
+				(form, index) =>
+					`${offset + index + 1}. **${safe(form.data.name)}** · \`${form.archived ? 'Archived' : form.published ? 'Published' : 'Draft'}\`\n   ID: \`${form.id}\``
 			)
 			.join('\n\n');
-		const controls = [navigation(`zf:b:forms:${actorId}`, page, pages)];
+		const controls = navigation(`zf:b:forms:${actorId}`, page, pages);
+		const footer = `-# ${totals?.total ?? 0} ${(totals?.total ?? 0) === 1 ? 'form' : 'forms'}${pages > 1 ? ` · Page ${page + 1} of ${pages}` : ''}`;
 
 		if (records.length) {
 			const menu = new StringSelectMenuBuilder()
 				.setCustomId(`zf:b:open:${actorId}`)
 				.setPlaceholder('Open a form')
 				.addOptions(records.map((form) => ({ label: form.data.name, value: form.id })));
-			return panel(`## Server forms\n${description}\n\nPage ${page + 1} of ${pages}`, [
-				...controls,
-				new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu)
-			]);
+			return panel(
+				`## Server forms\nSelect a form to manage its questions and settings.\n\n${description}\n\n${footer}`,
+				[new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu), ...controls]
+			);
 		}
 
 		return panel(
-			`## Server forms\nNo forms yet. Use /form create.\nPage ${page + 1} of ${pages}`,
+			`## Server forms\nNo forms yet. Use \`/form create\` to get started.`,
 			controls
 		);
 	}
@@ -123,12 +130,12 @@ export class FormBrowsing {
 		const description = records
 			.map(
 				(submission) =>
-					`${submission.id}\n${submission.status} · review ${submission.deliveryState} · ${submission.archived ? 'archived' : 'open'}${submission.threadId ? ` · <#${submission.threadId}>` : ''}`
+					`- \`${submission.id}\`\n  **${submission.status}** · ${submission.archived ? 'archived' : 'open'} · delivery: \`${submission.deliveryState}\`${submission.threadId ? ` · <#${submission.threadId}>` : ''}`
 			)
 			.join('\n\n');
 		return panel(
-			`## ${safe(form.data.name)} submissions\n${description || 'No submissions yet.'}\n\nPage ${page + 1} of ${pages}`,
-			[navigation(`zf:b:submissions:${form.id}:${actorId}`, page, pages)]
+			`## ${safe(form.data.name)} submissions\n${description || 'No submissions yet.'}${pages > 1 ? `\n\n-# Page ${page + 1} of ${pages}` : ''}`,
+			navigation(`zf:b:submissions:${form.id}:${actorId}`, page, pages)
 		);
 	}
 
@@ -149,13 +156,13 @@ export class FormBrowsing {
 		const description = records
 			.map(
 				(submission) =>
-					`${safe(submission.snapshot.name)} — ${submission.status}${submission.archived ? ' · archived' : ''}\n${submission.id}`
+					`- **${safe(submission.snapshot.name)}** · \`${submission.status}\`${submission.archived ? ' · archived' : ''}\n  ID: \`${submission.id}\``
 			)
 			.join('\n\n');
 		return panel(
-			`## Your submissions\n${description || 'You have no submissions yet.'}\n\nPage ${page + 1} of ${pages}`,
+			`## Your submissions\n${description || 'You have no submissions yet.'}${pages > 1 ? `\n\n-# Page ${page + 1} of ${pages}` : ''}`,
 			[
-				navigation(`zf:b:mine:${actorId}`, page, pages),
+				...navigation(`zf:b:mine:${actorId}`, page, pages),
 				buttons(button('zf:directory:page:0', 'Back to forms'))
 			]
 		);
@@ -163,7 +170,7 @@ export class FormBrowsing {
 
 	public preview(form: FormRecord, actorId: string, requestedPage = 0) {
 		const previewPages = form.data.questions.flatMap((question, index) => {
-			let details = `Question ${index + 1} of ${form.data.questions.length}\n### ${safe(question.prompt)}\nType: ${question.type} · ${question.required ? 'required' : 'optional'}`;
+			let details = `-# Question ${index + 1} of ${form.data.questions.length} · ${question.required ? 'Required' : 'Optional'} · ${question.type}\n\n### ${safe(question.prompt)}`;
 
 			if (question.type === 'text')
 				details += `\nLength: ${question.min}–${question.max} characters`;
@@ -178,9 +185,13 @@ export class FormBrowsing {
 		});
 		const { page, pages } = pagination(requestedPage, previewPages.length, 1);
 		return panel(
-			`## Preview: ${safe(form.data.name)}\n${safe(form.data.description)}\n\n${previewPages[page] ?? 'No questions yet.'}\n\nPage ${page + 1} of ${pages}`,
+			`## Preview: ${safe(form.data.name)}\n${safe(form.data.description)}\n\n${previewPages[page] ?? 'No questions yet.'}${pages > 1 ? `\n\n-# Page ${page + 1} of ${pages}` : ''}`,
 			[
-				navigation(`zf:b:preview:${form.id}:${actorId}:${form.data.revision}`, page, pages),
+				...navigation(
+					`zf:b:preview:${form.id}:${actorId}:${form.data.revision}`,
+					page,
+					pages
+				),
 				buttons(button(`zf:m:${form.id}:${actorId}:back`, 'Back to form'))
 			]
 		);
