@@ -613,5 +613,17 @@ export class DiscordDelivery {
 		await this.formService.database
 			.delete(processedInputs)
 			.where(lte(processedInputs.createdAt, new Date(Date.now() - 30 * 86400000)));
+
+		for (const questionFile of await this.formService.findUnusedQuestionFiles()) {
+			try {
+				await this.questionMedia.deleteMessage(
+					questionFile.channelId,
+					questionFile.messageId
+				);
+				await this.formService.forgetRetiredQuestionFile(questionFile.messageId);
+			} catch {
+				console.error('A retired question file could not be removed. It will retry.');
+			}
+		}
 	}
 }

@@ -1,7 +1,8 @@
 import { StaffPermissions } from './staff-permissions';
 import type { StaffIdentity } from '../domain/permissions';
 import { randomUUID } from 'node:crypto';
-import { and, eq, gt, lte, inArray, or, isNull, sql, desc } from 'drizzle-orm';
+import { and, eq, gt, lte, inArray, or, isNull, sql, desc, notExists } from 'drizzle-orm';
+import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import type { Database, Queryable } from '../../../database/database';
 import {
 	forms,
@@ -14,7 +15,8 @@ import {
 	auditEvents,
 	jobs,
 	processedInputs,
-	files
+	files,
+	retiredQuestionFiles
 } from '../../../database/schema';
 import { assertFormAccess, FormError, validateQuestionAnswer } from '../domain/rules';
 import { formConfigurationSchema } from '../domain/schemas';
@@ -27,6 +29,25 @@ import type {
 } from '../domain/types';
 const activeStates: QuestionnaireSession['status'][] = ['prompt', 'answer', 'confirm', 'paused'];
 const draftExpiry = () => new Date(Date.now() + 7 * 86400000);
+
+function retiredReferences(previous: FormConfiguration, updated: FormConfiguration) {
+	const keptMessageIds = new Set(
+		updated.questions.flatMap((question) =>
+			question.references.map((reference) => reference.messageId)
+		)
+	);
+	const retiredChannels = new Map<string, string>();
+
+	for (const question of previous.questions) {
+		for (const reference of question.references ?? []) {
+			if (!keptMessageIds.has(reference.messageId)) {
+				retiredChannels.set(reference.messageId, reference.channelId);
+			}
+		}
+	}
+
+	return [...retiredChannels].map(([messageId, channelId]) => ({ messageId, channelId }));
+}
 
 export class FormService {
 	public constructor(public readonly database: Database) {}
@@ -94,8 +115,56 @@ export class FormService {
 			const data = formConfigurationSchema.parse(change(form.data));
 			data.revision = form.data.revision + 1;
 			await database.update(forms).set({ data }).where(eq(forms.id, id));
+			const retiredFiles = retiredReferences(form.data, data);
+
+			if (retiredFiles.length) {
+				await database
+					.insert(retiredQuestionFiles)
+					.values(retiredFiles)
+					.onConflictDoNothing();
+			}
+
 			await this.recordAuditEvent(database, guildId, actorId, 'form.edit', id);
 		});
+	}
+
+	public async findUnusedQuestionFiles() {
+		const mentionsMessage = (column: AnyPgColumn) =>
+			sql`${column}::text like '%' || ${retiredQuestionFiles.messageId} || '%'`;
+
+		return this.database
+			.select()
+			.from(retiredQuestionFiles)
+			.where(
+				and(
+					notExists(
+						this.database
+							.select({ id: forms.id })
+							.from(forms)
+							.where(
+								or(mentionsMessage(forms.data), mentionsMessage(forms.published))
+							)
+					),
+					notExists(
+						this.database
+							.select({ id: sessions.id })
+							.from(sessions)
+							.where(
+								and(
+									inArray(sessions.status, activeStates),
+									mentionsMessage(sessions.snapshot)
+								)
+							)
+					)
+				)
+			)
+			.limit(20);
+	}
+
+	public async forgetRetiredQuestionFile(messageId: string) {
+		await this.database
+			.delete(retiredQuestionFiles)
+			.where(eq(retiredQuestionFiles.messageId, messageId));
 	}
 
 	public async publishForm(id: string, guildId: string, actorId: string, revision: number) {

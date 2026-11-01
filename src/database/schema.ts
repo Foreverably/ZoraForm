@@ -190,3 +190,8 @@ export const submissionReplies = pgTable('submission_replies', {
 	createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 	deliveredAt: timestamp('delivered_at', { withTimezone: true })
 });
+
+export const retiredQuestionFiles = pgTable('retired_question_files', {
+	messageId: text('message_id').primaryKey(),
+	channelId: text('channel_id').notNull()
+});

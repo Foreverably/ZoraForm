@@ -817,9 +817,9 @@ function serveDiscordFiles(t, status = 200) {
 	t.mock.method(globalThis, 'fetch', async () => new Response(new Uint8Array(4), { status }));
 }
 
-async function uploadReferenceFiles(editor, formId) {
+async function uploadReferenceFiles(editor, formId, control = 'Reference files') {
 	await openQuestion(editor, formId, 0);
-	await pressControl(editor, 'Reference files');
+	await pressControl(editor, control);
 	const modal = editor.modals.at(-1);
 	assert.equal(modal.components[0].component.type, 19);
 	await editor.builder.handleInteraction(
@@ -947,6 +947,96 @@ test('reference uploads explain missing channel permissions and invalid file lim
 	channel.permissionsFor = () => ({ has: () => false });
 	await assert.rejects(uploadReferenceFiles(editor, flow.form.id), /permissions/);
 	assert.equal(messages.size, 0);
+});
+
+const referenceMessageId = async (formId) =>
+	(await formService.findForm(formId)).data.questions[0].references[0].messageId;
+
+const retiredRecord = async (messageId) =>
+	(
+		await database
+			.select()
+			.from(schema.retiredQuestionFiles)
+			.where(eq(schema.retiredQuestionFiles.messageId, messageId))
+	)[0];
+
+test('replaced reference files are deleted only after nothing can still show them', async (t) => {
+	serveDiscordFiles(t);
+	const flow = await setupFlow();
+	const editor = managementEditor(flow);
+	const publish = () =>
+		editor.builder.handleInteraction(
+			editor.interaction(`zf:m:${flow.form.id}:${reviewerId}:publish`)
+		);
+	const { messages } = storeReferenceFiles(flow);
+	await uploadReferenceFiles(editor, flow.form.id);
+	const replacedMessageId = await referenceMessageId(flow.form.id);
+	await publish();
+	const { session } = await startAndDeliverQuestion(flow);
+
+	await uploadReferenceFiles(editor, flow.form.id, 'Replace files');
+	const currentMessageId = await referenceMessageId(flow.form.id);
+	await pressControl(editor, 'Make optional');
+	assert.notEqual(currentMessageId, replacedMessageId);
+	assert.ok(await retiredRecord(replacedMessageId));
+	assert.equal(await retiredRecord(currentMessageId), undefined);
+	await flow.delivery.cleanup();
+	assert.ok(messages.has(replacedMessageId), 'the published form still shows the old files');
+
+	await publish();
+	await flow.delivery.cleanup();
+	assert.ok(messages.has(replacedMessageId), 'the saved questionnaire still shows the old files');
+
+	await formService.navigateSession(session.id, flow.userId, session.version, null, 'cancel');
+	await flow.delivery.cleanup();
+	assert.equal(messages.has(replacedMessageId), false);
+	assert.ok(messages.has(currentMessageId));
+	assert.equal(await retiredRecord(replacedMessageId), undefined);
+});
+
+test('removing a question retires its files and failed deletions retry', async (t) => {
+	serveDiscordFiles(t);
+	const flow = await setupFlow();
+	const editor = managementEditor(flow);
+	const { channel, messages } = storeReferenceFiles(flow);
+	await uploadReferenceFiles(editor, flow.form.id);
+	const messageId = await referenceMessageId(flow.form.id);
+	const { revision } = (await formService.findForm(flow.form.id)).data;
+	await editor.builder.handleInteraction(
+		editor.interaction(
+			`zf:question:${flow.form.id}:${reviewerId}:remove:${revision}`,
+			'string',
+			['0']
+		)
+	);
+
+	const deleteMessage = channel.messages.delete;
+	channel.messages.delete = async () => {
+		throw Object.assign(new Error('Discord is unavailable'), { status: 500 });
+	};
+	t.mock.method(console, 'error', () => undefined);
+	await flow.delivery.cleanup();
+	assert.ok(messages.has(messageId));
+	assert.ok(await retiredRecord(messageId));
+
+	channel.messages.delete = deleteMessage;
+	await flow.delivery.cleanup();
+	assert.equal(messages.has(messageId), false);
+	assert.equal(await retiredRecord(messageId), undefined);
+});
+
+test('a retired file that staff already deleted is forgotten', async () => {
+	const flow = await setupFlow();
+	const { channel } = storeReferenceFiles(flow);
+	const messageId = flow.discord.id();
+	await database
+		.insert(schema.retiredQuestionFiles)
+		.values({ messageId, channelId: reviewChannelId });
+	channel.messages.delete = async () => {
+		throw Object.assign(new Error('Unknown Message'), { code: 10008 });
+	};
+	await flow.delivery.cleanup();
+	assert.equal(await retiredRecord(messageId), undefined);
 });
 
 test('native role and user pickers edit batches without losing existing access entries', async () => {

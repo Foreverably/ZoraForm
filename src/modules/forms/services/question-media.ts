@@ -25,6 +25,15 @@ const permanentlyUnavailableCodes = new Set([10003, 10008, 50001]);
 
 type SourceMessages = Map<string, Message | null>;
 
+function isPermanentlyUnavailable(error: unknown) {
+	return (
+		typeof error === 'object' &&
+		error !== null &&
+		'code' in error &&
+		permanentlyUnavailableCodes.has(error.code as number)
+	);
+}
+
 export class QuestionMedia {
 	public constructor(private readonly client: Client) {}
 
@@ -76,7 +85,7 @@ export class QuestionMedia {
 
 		const message = await channel.send({
 			content:
-				'Question reference files — keep this message while forms or saved questionnaires use these files.',
+				'Question reference files — the bot removes this message once no form or saved questionnaire uses them.',
 			files,
 			allowedMentions: { parse: [] }
 		});
@@ -102,10 +111,20 @@ export class QuestionMedia {
 			return;
 		}
 
-		const channel = await this.client.channels.fetch(source.channelId);
+		await this.deleteMessage(source.channelId, source.messageId);
+	}
 
-		if (channel && 'messages' in channel) {
-			await channel.messages.delete(source.messageId);
+	public async deleteMessage(channelId: string, messageId: string) {
+		try {
+			const channel = await this.client.channels.fetch(channelId);
+
+			if (channel && 'messages' in channel) {
+				await channel.messages.delete(messageId);
+			}
+		} catch (error) {
+			if (!isPermanentlyUnavailable(error)) {
+				throw error;
+			}
 		}
 	}
 
@@ -210,12 +229,7 @@ export class QuestionMedia {
 
 			return message.author.id === this.client.user?.id ? message : null;
 		} catch (error) {
-			if (
-				error &&
-				typeof error === 'object' &&
-				'code' in error &&
-				permanentlyUnavailableCodes.has(error.code as number)
-			) {
+			if (isPermanentlyUnavailable(error)) {
 				return null;
 			}
 

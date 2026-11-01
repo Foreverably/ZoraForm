@@ -49,7 +49,9 @@ The builder updates one message as you navigate, save a modal, or return with Ba
 
 ### Reference files
 
-Staff can show 1–3 screenshots or documents with a question, up to 8 MiB each and 20 MiB per question. The bot keeps them in a message in the form's submission channel and stores only that message's identifiers, so anyone who can read the channel can see them. Do not delete that message while forms or saved questionnaires use it. Replacing or removing files leaves the old message in place, because questionnaires already in progress stay on the revision they started with; delete it manually once those have finished.
+Staff can show 1–3 screenshots or documents with a question, up to 8 MiB each and 20 MiB per question. The bot keeps them in a message in the form's submission channel and stores only that message's identifiers, so anyone who can read the channel can see them. Do not delete that message while forms or saved questionnaires use it.
+
+Replacing files, removing them, or removing their question retires the old message. Questionnaires already in progress stay on the revision they started with, so the bot deletes a retired message automatically once no form draft, published form, or unfinished questionnaire uses it. Files on an archived form stay available because the form can be reopened.
 
 Publishing fails if a reference file is no longer available. If one disappears after publishing, applicants still receive the question, with a notice in place of the missing file. Temporary download failures retry instead of sending the question without its files.
 
