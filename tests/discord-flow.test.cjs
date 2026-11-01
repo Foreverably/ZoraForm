@@ -1398,6 +1398,60 @@ test('blacklist-only staff can open Access and block users but not change other 
 		.where(eq(schema.staffGrants.subjectId, blacklistRole));
 });
 
+test('the form panel only offers publishing when there is something to publish', async () => {
+	const flow = await setupFlow();
+	const editor = managementEditor(flow);
+	const prefix = `zf:m:${flow.form.id}:${reviewerId}`;
+	const open = async () => {
+		await editor.builder.handleInteraction(editor.interaction(`${prefix}:back`));
+		return JSON.stringify(componentTree(editor.message.payload));
+	};
+	let panelText = await open();
+	assert.doesNotMatch(panelText, /"label":"Publish/);
+	assert.match(panelText, /"label":"Archive"/);
+	assert.doesNotMatch(panelText, /Revision/);
+
+	await formService.changeFormBlacklist(flow.form.id, guildId, reviewerId, 'user', {
+		added: [reviewerId],
+		removed: []
+	});
+	panelText = await open();
+	assert.doesNotMatch(panelText, /"label":"Publish/, 'blacklists are already live');
+
+	await formService.editFormDraft(flow.form.id, guildId, reviewerId, (configuration) => ({
+		...configuration,
+		questions: [{ ...configuration.questions[0], prompt: 'Why?\nLine two is hidden' }]
+	}));
+	panelText = await open();
+	assert.match(panelText, /Unpublished changes/);
+	assert.match(panelText, /"label":"Publish changes"/);
+	assert.match(panelText, /1\. Why\? · /);
+
+	await editor.builder.handleInteraction(editor.interaction(`${prefix}:publish`));
+	assert.doesNotMatch(JSON.stringify(componentTree(editor.message.payload)), /"label":"Publish/);
+
+	await editor.builder.handleInteraction(editor.interaction(`${prefix}:archive`));
+	panelText = JSON.stringify(componentTree(editor.message.payload));
+	assert.match(panelText, /"label":"Reopen"/);
+	assert.doesNotMatch(panelText, /"label":"Archive"/);
+
+	const { formQuestionSchema: questionSchema } = require('../dist/modules/forms/domain/schemas');
+	const draft = await formService.createForm(guildId, reviewerId, {
+		name: 'New draft',
+		reviewChannelId,
+		questions: [questionSchema.parse({ id: randomUUID(), type: 'text', prompt: 'Why?' })]
+	});
+	const draftPanel = JSON.stringify(componentTree(managePanel(draft, reviewerId)));
+	assert.match(draftPanel, /"label":"Publish"/);
+	assert.match(draftPanel, /"label":"Archive"/);
+});
+
+test('buttons carry icons, and unknown labels stay valid without one', () => {
+	const { button } = require('../dist/modules/forms/discord/components');
+	assert.deepEqual(button('test:publish', 'Publish').toJSON().emoji, { name: '🚀' });
+	assert.equal(button('test:other', 'Something new').toJSON().emoji, undefined);
+});
+
 test('waking delivery sends the question without waiting and without reading old messages', async () => {
 	const flow = await setupFlow();
 	const channel = await (await flow.discord.client.users.fetch(flow.userId)).createDM();

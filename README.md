@@ -51,7 +51,7 @@ Use Access for allowed roles, required roles, blacklisted roles, and blocked use
 
 The Limits panel sets, from menus, how many times one person can submit, how many of their submissions can wait for review at once, how long they wait between submissions, and when submissions are deleted (30 days by default). When that time runs out, the bot deletes the answers, files, thread, and applicant card, and an undecided submission is closed as rejected. Question, allowed-role, required-role, and policy edits stay in the draft until Publish; blacklists take effect immediately.
 
-Publishing validates the submission channel, the bot's permissions, question configuration, and role references. `/form list` opens a paginated browser where selecting a form opens its management panel, which holds every form action including Publish, Archive, and Submissions. Previews include every question and choice, with pagination for long content.
+The form panel shows Publish for a draft, Publish changes when edits are waiting, and Reopen for an archived form. Publishing validates the submission channel, the bot's permissions, question configuration, and role references. `/form list` opens a paginated browser where selecting a form opens its management panel, which holds every form action including Publish, Archive, and Submissions. Previews include every question and choice, with pagination for long content.
 
 ## Channel visibility and staff actions
 

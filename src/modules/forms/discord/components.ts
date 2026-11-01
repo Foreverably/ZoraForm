@@ -24,8 +24,63 @@ export type Row =
 
 export const safe = (text: string) => escapeMarkdown(text).replace(/@/g, '@\u200b');
 
-export const button = (id: string, label: string, style = ButtonStyle.Secondary) =>
-	new ButtonBuilder().setCustomId(id).setLabel(label).setStyle(style);
+const buttonIcons: Record<string, string> = {
+	Accept: '✅',
+	Access: '🔐',
+	'Add question': '➕',
+	'All forms': '📋',
+	'All permissions': '🔑',
+	'Answer limits': '📏',
+	Archive: '📦',
+	Back: '⬅️',
+	'Back to form': '⬅️',
+	'Back to forms': '⬅️',
+	'Back to submissions': '⬅️',
+	Cancel: '✖️',
+	'Create replacement thread': '🧵',
+	Details: '📝',
+	Edit: '✏️',
+	'Edit answer': '✏️',
+	'Edit choices': '✏️',
+	'Edit wording': '✏️',
+	'Earlier text': '◀️',
+	'Keep answering': '▶️',
+	Limits: '⏱️',
+	'Make optional': '🔘',
+	'Make required': '🔘',
+	'More text': '▶️',
+	'My submissions': '📨',
+	Next: '▶️',
+	'Other forms': '📋',
+	Pause: '⏸️',
+	Preview: '👁️',
+	'Preview form': '👁️',
+	Previous: '◀️',
+	Publish: '🚀',
+	'Publish changes': '🚀',
+	'Reference files': '📎',
+	Refresh: '🔄',
+	Reject: '❌',
+	Remove: '🗑️',
+	'Remove files': '🗑️',
+	Reopen: '🔓',
+	Reorder: '↕️',
+	'Replace files': '📎',
+	Reply: '💬',
+	Resume: '▶️',
+	'Review channel': '📥',
+	Skip: '⏭️',
+	Submissions: '📨',
+	Submit: '✅',
+	'Yes, cancel': '✖️'
+};
+
+export function button(id: string, label: string, style = ButtonStyle.Secondary) {
+	const control = new ButtonBuilder().setCustomId(id).setLabel(label).setStyle(style);
+	const icon = buttonIcons[label];
+
+	return icon ? control.setEmoji({ name: icon }) : control;
+}
 
 export const buttons = (...items: ButtonBuilder[]) =>
 	new ActionRowBuilder<ButtonBuilder>().addComponents(items);
@@ -204,21 +259,45 @@ export function prompt(session: QuestionnaireSession) {
 	);
 }
 
+function hasUnpublishedChanges(form: FormRecord) {
+	if (!form.published) {
+		return false;
+	}
+
+	const comparable = (configuration: NonNullable<FormRecord['published']>) =>
+		JSON.stringify({ ...configuration, revision: 0 });
+
+	return comparable(form.data) !== comparable(form.published);
+}
+
 export function managePanel(form: FormRecord, actorId: string) {
 	const controlId = (action: string) => `zf:m:${form.id}:${actorId}:${action}`;
 	const questionCount = form.data.questions.length;
-	const status = form.archived ? 'Archived' : form.published ? 'Published' : 'Draft';
+	const hasChanges = !form.archived && hasUnpublishedChanges(form);
+	const status = form.archived
+		? 'Archived'
+		: form.published
+			? `Published${hasChanges ? ' · Unpublished changes' : ''}`
+			: 'Draft';
+	const publishLabel = form.archived
+		? 'Reopen'
+		: !form.published
+			? 'Publish'
+			: hasChanges
+				? 'Publish changes'
+				: null;
 	const questions =
 		form.data.questions
-			.map(
-				(question, questionIndex) =>
-					`${questionIndex + 1}. ${safe(withoutNumbering(question.prompt).slice(0, 40))}${withoutNumbering(question.prompt).length > 40 ? '…' : ''} · \`${question.type}\``
-			)
+			.map((question, questionIndex) => {
+				const firstLine = withoutNumbering(question.prompt).split('\n')[0]!;
+
+				return `${questionIndex + 1}. ${safe(firstLine.slice(0, 50))}${firstLine.length > 50 ? '…' : ''} · \`${question.type}\``;
+			})
 			.join('\n') || '*No questions yet. Add your first question below.*';
 	const description = form.data.description ? `\n${safe(form.data.description)}\n` : '';
 
 	return panel(
-		`## ${safe(form.data.name)}\n-# ${status} · Revision ${form.data.revision} · ${questionCount} ${questionCount === 1 ? 'question' : 'questions'}\n${description}\n### Questions\n${questions}\n\n-# Changes stay in the draft until you publish.`,
+		`## ${safe(form.data.name)}\n-# ${status} · ${questionCount} ${questionCount === 1 ? 'question' : 'questions'}\n${description}\n### Questions\n${questions}${form.published && !hasChanges && !form.archived ? '\n\n-# Edits stay in a draft until you publish them.' : ''}`,
 		[
 			buttons(
 				button(controlId('add'), 'Add question', ButtonStyle.Primary),
@@ -240,8 +319,12 @@ export function managePanel(form: FormRecord, actorId: string) {
 				button(`zf:b:forms:${actorId}:0`, 'All forms')
 			),
 			buttons(
-				button(controlId('publish'), 'Publish', ButtonStyle.Success),
-				button(controlId('archive'), 'Archive', ButtonStyle.Danger)
+				...(publishLabel
+					? [button(controlId('publish'), publishLabel, ButtonStyle.Success)]
+					: []),
+				...(form.archived
+					? []
+					: [button(controlId('archive'), 'Archive', ButtonStyle.Danger)])
 			)
 		]
 	);
