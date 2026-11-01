@@ -1,0 +1,619 @@
+import { randomUUID } from 'node:crypto';
+import { and, eq, gt, lte, inArray, or, isNull, sql, desc } from 'drizzle-orm';
+import type { Database, Queryable } from '../../database/database';
+import {
+	forms,
+	sessions,
+	submissions,
+	userLocks,
+	guildBlacklist,
+	auditEvents,
+	jobs,
+	processedInputs,
+	files
+} from '../../database/schema';
+import {
+	assertFormAccess,
+	FormError,
+	formConfigurationSchema,
+	validateQuestionAnswer,
+	type StoredAttachment,
+	type FormRecord,
+	type FormConfiguration,
+	type DeliveryJob,
+	type QuestionnaireSession
+} from './model';
+const activeStates: QuestionnaireSession['status'][] = ['prompt', 'answer', 'confirm', 'paused'];
+const draftExpiry = () => new Date(Date.now() + 7 * 86400000);
+
+export class FormEngine {
+	public constructor(public readonly database: Database) {}
+
+	public async findForm(id: string, database: Queryable = this.database) {
+		const [form] = await database.select().from(forms).where(eq(forms.id, id));
+		if (!form) {
+			throw new FormError('Form not found.');
+		}
+		return form;
+	}
+
+	public listForms(guildId?: string) {
+		return this.database
+			.select()
+			.from(forms)
+			.where(guildId ? eq(forms.guildId, guildId) : eq(forms.archived, false))
+			.orderBy(forms.id);
+	}
+
+	public async recordAuditEvent(
+		database: Queryable,
+		guildId: string,
+		actorId: string,
+		action: string,
+		target: string
+	) {
+		await database.insert(auditEvents).values({
+			guildId: guildId,
+			actorId: actorId,
+			action,
+			targetId: target
+		});
+	}
+
+	public async createForm(guildId: string, actorId: string, data: unknown) {
+		const parsed = formConfigurationSchema.parse(data);
+		const id = randomUUID();
+		await this.database.transaction(async (database) => {
+			await database.insert(forms).values({
+				id,
+				guildId: guildId,
+				data: parsed
+			});
+			await this.recordAuditEvent(database, guildId, actorId, 'form.create', id);
+		});
+		return this.findForm(id);
+	}
+
+	public async editFormDraft(
+		id: string,
+		guildId: string,
+		actorId: string,
+		change: (data: FormConfiguration) => FormConfiguration
+	) {
+		await this.database.transaction(async (database) => {
+			const [form] = await database
+				.select()
+				.from(forms)
+				.where(and(eq(forms.id, id), eq(forms.guildId, guildId)))
+				.for('update');
+			if (!form) {
+				throw new FormError('Form not found in this server.');
+			}
+			const data = formConfigurationSchema.parse(change(form.data));
+			data.revision = form.data.revision + 1;
+			await database.update(forms).set({ data }).where(eq(forms.id, id));
+			await this.recordAuditEvent(database, guildId, actorId, 'form.edit', id);
+		});
+	}
+
+	public async publishForm(id: string, guildId: string, actorId: string, revision: number) {
+		await this.database.transaction(async (database) => {
+			const [form] = await database
+				.select()
+				.from(forms)
+				.where(and(eq(forms.id, id), eq(forms.guildId, guildId)))
+				.for('update');
+			if (!form || form.data.revision !== revision) {
+				throw new FormError('The draft changed. Reopen the panel and publish again.');
+			}
+			if (!form.data.questions.length) {
+				throw new FormError('Add at least one question before publishing.');
+			}
+			await database
+				.update(forms)
+				.set({
+					published: form.data,
+					archived: false
+				})
+				.where(eq(forms.id, id));
+			await this.recordAuditEvent(database, guildId, actorId, 'form.publish', id);
+		});
+	}
+
+	public async archiveForm(id: string, guildId: string, actorId: string) {
+		await this.database.transaction(async (database) => {
+			const form = await this.findForm(id, database);
+			if (form.guildId !== guildId) {
+				throw new FormError('Wrong server.');
+			}
+			await database.update(forms).set({ archived: true }).where(eq(forms.id, id));
+			await this.recordAuditEvent(database, guildId, actorId, 'form.archive', id);
+		});
+	}
+
+	public async setGuildBlacklist(
+		guildId: string,
+		actorId: string,
+		userId: string,
+		blocked: boolean
+	) {
+		await this.database.transaction(async (database) => {
+			if (blocked) {
+				await database
+					.insert(guildBlacklist)
+					.values({
+						guildId: guildId,
+						userId: userId
+					})
+					.onConflictDoNothing();
+			} else {
+				await database
+					.delete(guildBlacklist)
+					.where(
+						and(eq(guildBlacklist.guildId, guildId), eq(guildBlacklist.userId, userId))
+					);
+			}
+			await this.recordAuditEvent(
+				database,
+				guildId,
+				actorId,
+				blocked ? 'blacklist.add' : 'blacklist.remove',
+				userId
+			);
+		});
+	}
+
+	private withUserLock<T>(userId: string, work: (database: Queryable) => Promise<T>) {
+		return this.database.transaction(async (database) => {
+			await database.insert(userLocks).values({ userId: userId }).onConflictDoNothing();
+			await database
+				.select()
+				.from(userLocks)
+				.where(eq(userLocks.userId, userId))
+				.for('update');
+			return work(database);
+		});
+	}
+
+	public async assertEligibility(
+		form: FormRecord,
+		userId: string,
+		memberRoleIds: readonly string[] | null,
+		database: Queryable = this.database
+	) {
+		assertFormAccess(form, userId, memberRoleIds);
+		if (
+			(
+				await database
+					.select()
+					.from(guildBlacklist)
+					.where(
+						and(
+							eq(guildBlacklist.guildId, form.guildId),
+							eq(guildBlacklist.userId, userId)
+						)
+					)
+			).length
+		) {
+			throw new FormError('This form is not available to you.');
+		}
+		await this.assertSubmissionPolicy(form, userId, database);
+	}
+
+	private async assertSubmissionPolicy(form: FormRecord, userId: string, database: Queryable) {
+		const rules = form.published!;
+		const previous = await database
+			.select({
+				status: submissions.status,
+				created: submissions.createdAt
+			})
+			.from(submissions)
+			.where(and(eq(submissions.formId, form.id), eq(submissions.userId, userId)))
+			.orderBy(desc(submissions.createdAt));
+		if (
+			(rules.totalLimit > 0 && previous.length >= rules.totalLimit) ||
+			(rules.pendingLimit > 0 &&
+				previous.filter((submission) => submission.status === 'pending').length >=
+					rules.pendingLimit) ||
+			(rules.cooldownSeconds > 0 &&
+				previous[0] &&
+				previous[0].created.getTime() > Date.now() - rules.cooldownSeconds * 1000)
+		) {
+			throw new FormError(
+				'Your submission limit or cooldown for this form has been reached.'
+			);
+		}
+	}
+
+	public async findActiveSession(userId: string, database: Queryable = this.database) {
+		const [session] = await database
+			.select()
+			.from(sessions)
+			.where(
+				and(
+					eq(sessions.userId, userId),
+					inArray(sessions.status, activeStates),
+					gt(sessions.expiresAt, new Date())
+				)
+			);
+		return session ?? null;
+	}
+
+	public async findSession(id: string, database: Queryable = this.database) {
+		const [session] = await database.select().from(sessions).where(eq(sessions.id, id));
+		if (!session) {
+			throw new FormError('Session not found.');
+		}
+		return session;
+	}
+
+	public async enqueueDelivery(
+		database: Queryable,
+		kind: DeliveryJob['kind'],
+		id: string,
+		version?: number
+	) {
+		await database
+			.insert(jobs)
+			.values({
+				kind,
+				payload:
+					version === undefined
+						? { id }
+						: {
+								id,
+								version
+							},
+				dedupe: `${kind}:${id}:${version ?? 0}`
+			})
+			.onConflictDoNothing();
+	}
+
+	public async startSession(
+		formId: string,
+		userId: string,
+		memberRoleIds: readonly string[] | null
+	) {
+		return this.withUserLock(userId, async (database) => {
+			await database
+				.update(sessions)
+				.set({
+					status: 'expired',
+					version: sql`${sessions.version}+1`
+				})
+				.where(
+					and(
+						eq(sessions.userId, userId),
+						lte(sessions.expiresAt, new Date()),
+						inArray(sessions.status, activeStates)
+					)
+				);
+			if (await this.findActiveSession(userId, database)) {
+				throw new FormError('You already have a questionnaire. Resume or cancel it first.');
+			}
+			const form = await this.findForm(formId, database);
+			await this.assertEligibility(form, userId, memberRoleIds, database);
+			const id = randomUUID();
+			await database.insert(sessions).values({
+				id,
+				userId: userId,
+				guildId: form.guildId,
+				formId: form.id,
+				snapshot: form.published!
+			});
+			await this.enqueueDelivery(database, 'prompt', id, 0);
+			return this.findSession(id, database);
+		});
+	}
+
+	private async assertCurrentSession(
+		database: Queryable,
+		id: string,
+		userId: string,
+		version: number,
+		memberRoleIds: readonly string[] | null
+	) {
+		const session = await this.findSession(id, database);
+		if (
+			session.userId !== userId ||
+			session.version !== version ||
+			session.expiresAt.getTime() <= Date.now() ||
+			!activeStates.includes(session.status)
+		) {
+			throw new FormError(
+				'That response is out of date. Use the latest question or send a DM to resume.'
+			);
+		}
+		await this.assertEligibility(
+			await this.findForm(session.formId, database),
+			userId,
+			memberRoleIds,
+			database
+		);
+		return session;
+	}
+
+	public async saveAnswer(
+		id: string,
+		userId: string,
+		version: number,
+		memberRoleIds: readonly string[] | null,
+		inputId: string,
+		answerText: string,
+		attachments: StoredAttachment[] = [],
+		reference?: string
+	) {
+		return this.withUserLock(userId, async (database) => {
+			if (
+				(
+					await database
+						.select()
+						.from(processedInputs)
+						.where(eq(processedInputs.id, inputId))
+				).length
+			) {
+				return;
+			}
+			const session = await this.assertCurrentSession(
+				database,
+				id,
+				userId,
+				version,
+				memberRoleIds
+			);
+			if (
+				session.status !== 'answer' ||
+				!session.promptId ||
+				BigInt(inputId) <= BigInt(session.promptId) ||
+				(reference && reference !== session.promptId)
+			) {
+				throw new FormError('Please answer the latest question after it appears.');
+			}
+			const question = session.snapshot.questions[session.position];
+			if (!question) {
+				throw new FormError('No question is active.');
+			}
+			const answer = validateQuestionAnswer(question, answerText, attachments);
+			const answers = [...session.answers];
+			answers[session.position] = answer;
+			for (const attachment of attachments) {
+				const [stored] = await database
+					.select()
+					.from(files)
+					.where(and(eq(files.key, attachment.key), eq(files.sessionId, id)));
+				if (!stored) {
+					throw new FormError('Upload could not be saved. Try again.');
+				}
+			}
+			await database.insert(processedInputs).values({ id: inputId });
+			await database
+				.update(sessions)
+				.set({
+					answers,
+					position: session.position + 1,
+					status: 'prompt',
+					version: session.version + 1,
+					promptId: null,
+					expiresAt: draftExpiry()
+				})
+				.where(eq(sessions.id, id));
+			await this.enqueueDelivery(database, 'prompt', id, session.version + 1);
+		});
+	}
+
+	public async navigateSession(
+		id: string,
+		userId: string,
+		version: number,
+		memberRoleIds: readonly string[] | null,
+		action: 'resume' | 'back' | 'skip' | 'pause' | 'cancel'
+	) {
+		await this.withUserLock(userId, async (database) => {
+			const session = await this.findSession(id, database);
+			if (
+				session.userId !== userId ||
+				session.version !== version ||
+				!activeStates.includes(session.status) ||
+				session.expiresAt.getTime() <= Date.now()
+			) {
+				throw new FormError('This session control is out of date.');
+			}
+			if (action !== 'cancel') {
+				await this.assertEligibility(
+					await this.findForm(session.formId, database),
+					userId,
+					memberRoleIds,
+					database
+				);
+			}
+			let position = session.position;
+			let status: QuestionnaireSession['status'] = 'prompt';
+			const answers = [...session.answers];
+			if (action === 'pause') {
+				status = 'paused';
+			}
+			if (action === 'cancel') {
+				status = 'cancelled';
+			}
+			if (action === 'back') {
+				position = Math.max(0, position - 1);
+			}
+			if (action === 'skip') {
+				if (
+					session.status !== 'answer' ||
+					session.snapshot.questions[position]?.required !== false
+				) {
+					throw new FormError('This question cannot be skipped.');
+				}
+				answers[position] = null;
+				position++;
+			}
+			await database
+				.update(sessions)
+				.set({
+					position,
+					status,
+					answers,
+					version: session.version + 1,
+					promptId: null,
+					expiresAt: draftExpiry()
+				})
+				.where(eq(sessions.id, id));
+			if (status === 'prompt') {
+				await this.enqueueDelivery(database, 'prompt', id, session.version + 1);
+			}
+		});
+	}
+
+	public async findSubmission(id: string) {
+		const [session] = await this.database
+			.select()
+			.from(submissions)
+			.where(eq(submissions.id, id));
+		if (!session) {
+			throw new FormError('Submission not found.');
+		}
+		return session;
+	}
+
+	public async submitSession(
+		id: string,
+		userId: string,
+		version: number,
+		memberRoleIds: readonly string[] | null
+	) {
+		return this.withUserLock(userId, async (database) => {
+			const [existing] = await database
+				.select()
+				.from(submissions)
+				.where(and(eq(submissions.sessionId, id), eq(submissions.userId, userId)));
+			if (existing) {
+				return existing;
+			}
+			const session = await this.assertCurrentSession(
+				database,
+				id,
+				userId,
+				version,
+				memberRoleIds
+			);
+			if (
+				session.status !== 'confirm' ||
+				session.snapshot.questions.some(
+					(question, questionIndex) =>
+						question.required && session.answers[questionIndex] == null
+				)
+			) {
+				throw new FormError('Finish answering and review your answers before submitting.');
+			}
+			const form = await this.findForm(session.formId, database);
+			const submissionId = randomUUID();
+			const expires = new Date(Date.now() + session.snapshot.retentionDays * 86400000);
+			const [submission] = await database
+				.insert(submissions)
+				.values({
+					id: submissionId,
+					sessionId: id,
+					userId: userId,
+					guildId: session.guildId,
+					formId: session.formId,
+					snapshot: {
+						...session.snapshot,
+						reviewChannelId: form.published!.reviewChannelId,
+						reviewerIds: form.published!.reviewerIds
+					},
+					answers: session.answers,
+					expiresAt: expires
+				})
+				.returning();
+			await database
+				.update(sessions)
+				.set({
+					status: 'submitted',
+					version: session.version + 1
+				})
+				.where(eq(sessions.id, id));
+			await database.update(files).set({ expiresAt: expires }).where(eq(files.sessionId, id));
+			await this.enqueueDelivery(database, 'review', submissionId);
+			await this.recordAuditEvent(
+				database,
+				session.guildId,
+				userId,
+				'submission.submit',
+				submissionId
+			);
+			return submission!;
+		});
+	}
+
+	public async recordDecision(
+		id: string,
+		reviewerId: string,
+		threadId: string,
+		decision: 'accepted' | 'rejected',
+		reason: string
+	) {
+		await this.database.transaction(async (database) => {
+			const [session] = await database
+				.select()
+				.from(submissions)
+				.where(eq(submissions.id, id))
+				.for('update');
+			if (!session || session.threadId !== threadId) {
+				throw new FormError('This review control does not belong to this threadId.');
+			}
+			const form = await this.findForm(session.formId, database);
+			if (!form.data.reviewerIds.includes(reviewerId)) {
+				throw new FormError('You are not an authorized reviewerId.');
+			}
+			if (session.status !== 'pending') {
+				throw new FormError(`This submission is already ${session.status}.`);
+			}
+			await database
+				.update(submissions)
+				.set({
+					status: decision,
+					reviewerId: reviewerId,
+					reason: reason.slice(0, 1000)
+				})
+				.where(eq(submissions.id, id));
+			await this.recordAuditEvent(
+				database,
+				session.guildId,
+				reviewerId,
+				`submission.${decision}`,
+				id
+			);
+			await this.enqueueDelivery(database, 'receipt', id);
+			await this.enqueueDelivery(database, 'close', id);
+		});
+	}
+
+	public async claimDeliveryJob() {
+		return this.database.transaction(async (database) => {
+			const [job] = await database
+				.select()
+				.from(jobs)
+				.where(
+					and(
+						lte(jobs.nextAttemptAt, new Date()),
+						or(isNull(jobs.leaseUntil), lte(jobs.leaseUntil, new Date()))
+					)
+				)
+				.orderBy(jobs.nextAttemptAt)
+				.for('update', { skipLocked: true })
+				.limit(1);
+			if (!job) {
+				return null;
+			}
+			await database
+				.update(jobs)
+				.set({
+					leaseUntil: new Date(Date.now() + 300000),
+					attempts: job.attempts + 1
+				})
+				.where(eq(jobs.id, job.id));
+			return job;
+		});
+	}
+}
