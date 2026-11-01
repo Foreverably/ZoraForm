@@ -1,18 +1,40 @@
 import {
 	ActionRowBuilder,
+	ContainerBuilder,
 	RoleSelectMenuBuilder,
+	SeparatorBuilder,
+	SeparatorSpacingSize,
+	TextDisplayBuilder,
 	UserSelectMenuBuilder,
 	type AnySelectMenuInteraction
 } from 'discord.js';
 import { FormError } from '../domain/rules';
 import type { FormConfiguration, FormRecord } from '../domain/types';
-import { button, buttons, panel, safe, type Row } from './components';
+import { button, buttons, containerPanel, safe } from './components';
+
+const maximumSelectedEntries = 25;
 
 const accessCategories = {
-	allowRoles: 'Allowed roles',
-	requiredRoles: 'Required roles',
-	denyRoles: 'Blacklisted roles',
-	blacklist: 'Blacklisted users'
+	allowRoles: {
+		label: 'Allowed roles',
+		description: 'Applicants need at least one of these. Empty lets everyone apply.',
+		emptyPlaceholder: 'Everyone can apply'
+	},
+	requiredRoles: {
+		label: 'Required roles',
+		description: 'Applicants need all of these.',
+		emptyPlaceholder: 'No required roles'
+	},
+	denyRoles: {
+		label: 'Blacklisted roles',
+		description: 'Anyone with one of these cannot apply. Applies immediately.',
+		emptyPlaceholder: 'No blacklisted roles'
+	},
+	blacklist: {
+		label: 'Blacklisted users',
+		description: 'These people cannot apply. Applies immediately.',
+		emptyPlaceholder: 'No blacklisted users'
+	}
 } as const;
 
 type AccessCategory = keyof typeof accessCategories;
@@ -29,58 +51,82 @@ function accessCategory(value: string): AccessCategory {
 	return value as AccessCategory;
 }
 
-export function accessPanel(form: FormRecord, actorId: string, requestedCategory?: string) {
-	const controls: Row[] = [];
-	const prefix = `zf:access:${form.id}:${actorId}`;
-	let description = 'Choose which access list to change. Blacklists always take priority.';
+function categorySelector(form: FormRecord, actorId: string, category: AccessCategory) {
+	const shownEntries = form.data[category].slice(0, maximumSelectedEntries);
+	const customId = `zf:access:${form.id}:${actorId}:${category}:set:${form.data.revision}`;
+	const placeholder = accessCategories[category].emptyPlaceholder;
 
-	if (requestedCategory) {
-		const category = accessCategory(requestedCategory);
-		const identifiers = form.data[category];
-		const noun = category === 'blacklist' ? 'users' : 'roles';
-		const explanation =
-			category === 'allowRoles'
-				? 'Applicants need any one of these roles. An empty list allows everyone.'
-				: category === 'requiredRoles'
-					? 'Applicants need every role in this list.'
-					: 'Anyone matching this list is blocked from applying.';
-		description = `### ${accessCategories[category]}\n${explanation}\n-# ${identifiers.length} ${noun} configured. Select up to 25 at a time to add or remove.\n-# ${blacklistSubject(category) ? 'Blacklist changes apply immediately, including to the published form.' : 'Changes stay in the draft until you publish.'}`;
+	if (category === 'blacklist') {
+		const selector = new UserSelectMenuBuilder()
+			.setCustomId(customId)
+			.setPlaceholder(placeholder)
+			.setMinValues(0)
+			.setMaxValues(maximumSelectedEntries);
 
-		for (const operation of ['add', 'remove'] as const) {
-			const selector =
-				category === 'blacklist'
-					? new UserSelectMenuBuilder()
-					: new RoleSelectMenuBuilder();
-			selector
-				.setCustomId(`${prefix}:${category}:${operation}:${form.data.revision}`)
-				.setPlaceholder(`${operation === 'add' ? 'Add' : 'Remove'} ${noun}`)
-				.setMinValues(1)
-				.setMaxValues(25);
-			controls.push(
-				new ActionRowBuilder<RoleSelectMenuBuilder | UserSelectMenuBuilder>().addComponents(
-					selector
-				)
-			);
+		if (shownEntries.length) {
+			selector.setDefaultUsers(...shownEntries);
 		}
 
-		if (identifiers.length) {
-			description += `\n\nConfigured ${noun}:\n${identifiers.map((identifier) => (category === 'blacklist' ? `<@${identifier}>` : `<@&${identifier}>`)).join(' ')}`;
-		}
+		return new ActionRowBuilder<UserSelectMenuBuilder>().addComponents(selector);
 	}
 
-	const categoryButtons = Object.entries(accessCategories).map(([category, label]) =>
-		button(`${prefix}:${category}:open`, label).setDisabled(category === requestedCategory)
-	);
-	controls.push(buttons(...categoryButtons.slice(0, 2)), buttons(...categoryButtons.slice(2)));
+	const selector = new RoleSelectMenuBuilder()
+		.setCustomId(customId)
+		.setPlaceholder(placeholder)
+		.setMinValues(0)
+		.setMaxValues(maximumSelectedEntries);
 
-	controls.push(buttons(button(`zf:m:${form.id}:${actorId}:back`, 'Back to form')));
+	if (shownEntries.length) {
+		selector.setDefaultRoles(...shownEntries);
+	}
 
-	return panel(`## ${safe(form.data.name)} — Applicant access\n\n${description}`, controls);
+	return new ActionRowBuilder<RoleSelectMenuBuilder>().addComponents(selector);
 }
 
-export function readAccessChange(interaction: AnySelectMenuInteraction, segments: string[]) {
+export function accessPanel(form: FormRecord, actorId: string) {
+	const container = new ContainerBuilder().addTextDisplayComponents(
+		new TextDisplayBuilder().setContent(
+			`## ${safe(form.data.name)} — Applicant access\nBlacklists always take priority.`
+		)
+	);
+
+	for (const category of Object.keys(accessCategories) as AccessCategory[]) {
+		const { label, description } = accessCategories[category];
+		const hiddenEntries = form.data[category].length - maximumSelectedEntries;
+
+		container.addTextDisplayComponents(
+			new TextDisplayBuilder().setContent(
+				`**${label}**\n-# ${description}${hiddenEntries > 0 ? ` ${hiddenEntries} more not shown here stay on the list.` : ''}`
+			)
+		);
+		container.addActionRowComponents(categorySelector(form, actorId, category).toJSON());
+	}
+
+	container.addSeparatorComponents(
+		new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Small)
+	);
+	container.addTextDisplayComponents(
+		new TextDisplayBuilder().setContent(
+			'-# Allowed and required roles stay in the draft until you publish.'
+		)
+	);
+	container.addActionRowComponents(
+		buttons(button(`zf:m:${form.id}:${actorId}:back`, 'Back to form')).toJSON()
+	);
+
+	return containerPanel([container]);
+}
+
+export function readAccessChange(
+	interaction: AnySelectMenuInteraction,
+	segments: string[],
+	configuration: FormConfiguration
+) {
 	const category = accessCategory(segments[4]!);
-	const operation = segments[5];
+
+	if (segments[5] !== 'set') {
+		throw new FormError('Use the access selectors on the current panel.');
+	}
 
 	if (
 		category === 'blacklist' ? !interaction.isUserSelectMenu() : !interaction.isRoleSelectMenu()
@@ -88,14 +134,12 @@ export function readAccessChange(interaction: AnySelectMenuInteraction, segments
 		throw new FormError('Use the matching user or role selector.');
 	}
 
-	if (operation !== 'add' && operation !== 'remove') {
-		throw new FormError('Choose whether to add or remove entries.');
-	}
+	const shownEntries = configuration[category].slice(0, maximumSelectedEntries);
 
 	return {
 		category,
-		adding: operation === 'add',
-		selected: interaction.values,
+		added: interaction.values.filter((entry) => !configuration[category].includes(entry)),
+		removed: shownEntries.filter((entry) => !interaction.values.includes(entry)),
 		revision: Number(segments[6])
 	};
 }
@@ -104,7 +148,7 @@ export function updateAccessList(
 	configuration: FormConfiguration,
 	change: ReturnType<typeof readAccessChange>
 ): FormConfiguration {
-	const { category, adding, selected, revision } = change;
+	const { category, added, removed, revision } = change;
 
 	if (configuration.revision !== revision) {
 		throw new FormError(
@@ -112,9 +156,10 @@ export function updateAccessList(
 		);
 	}
 
-	const identifiers = adding
-		? [...new Set([...configuration[category], ...selected])]
-		: configuration[category].filter((identifier) => !selected.includes(identifier));
+	const identifiers = [
+		...configuration[category].filter((identifier) => !removed.includes(identifier)),
+		...added
+	];
 
 	if (identifiers.length > 100) {
 		throw new FormError(

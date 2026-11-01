@@ -127,6 +127,15 @@ export async function routeFormInteraction(interaction: FormInteraction) {
 			return;
 		}
 
+		if (route === 'p') {
+			if (interaction.isModalSubmit()) {
+				throw new FormError('Use the permission selectors.');
+			}
+
+			await runtime.staffPanel.handle(interaction);
+			return;
+		}
+
 		if (route === 'r') {
 			const [, , submissionId, action] = interaction.customId.split(':');
 			const submission = await runtime.formService.findSubmission(submissionId!);
@@ -254,7 +263,7 @@ export async function routeFormInteraction(interaction: FormInteraction) {
 			const segments = interaction.customId.split(':');
 			const isOwnedEditor =
 				interaction.inGuild() &&
-				['m', 'type', 'question', 'config', 'qsave', 'access', 'qe'].includes(
+				['m', 'type', 'question', 'config', 'qsave', 'access', 'qe', 'limits'].includes(
 					segments[1]!
 				) &&
 				segments[3] === interaction.user.id;

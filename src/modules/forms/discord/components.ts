@@ -60,13 +60,17 @@ function sectionContainer({ text, rows = [], accentColor }: PanelSection) {
 	return container;
 }
 
-export function panelSections(sections: PanelSection[]) {
+export function containerPanel(components: ContainerBuilder[]) {
 	return {
-		components: sections.map(sectionContainer),
+		components,
 		flags: MessageFlags.IsComponentsV2 as const,
 		attachments: [],
 		allowedMentions: { parse: [] }
 	};
+}
+
+export function panelSections(sections: PanelSection[]) {
+	return containerPanel(sections.map(sectionContainer));
 }
 
 export function panel(text: string, rows: Row[] = []) {
@@ -195,7 +199,7 @@ export function prompt(session: QuestionnaireSession) {
 		)
 	);
 	return panel(
-		`-# **${safe(session.snapshot.name)}** · Question ${session.position + 1} of ${session.snapshot.questions.length}\n${questionHeading(question.prompt)}\n-# ${hint}${session.position === 0 ? `\n\n-# Progress is saved for seven days. Submitted answers and files are retained for ${session.snapshot.retentionDays} days for staff review.` : ''}`,
+		`-# **${safe(session.snapshot.name)}** · Question ${session.position + 1} of ${session.snapshot.questions.length}\n${questionHeading(question.prompt)}\n-# ${hint}${session.position === 0 ? `\n\n-# Progress is saved for seven days. Submitted answers and files are deleted after ${session.snapshot.retentionDays} days.` : ''}`,
 		rows
 	);
 }

@@ -9,8 +9,6 @@ import {
 	sessions,
 	submissions,
 	userLocks,
-	guildBlacklist,
-	roleBlacklist,
 	submissionReplies,
 	auditEvents,
 	jobs,
@@ -202,45 +200,12 @@ export class FormService {
 		});
 	}
 
-	public async setGuildBlacklist(
-		guildId: string,
-		actorId: string,
-		userId: string,
-		blocked: boolean
-	) {
-		await this.database.transaction(async (database) => {
-			if (blocked) {
-				await database
-					.insert(guildBlacklist)
-					.values({
-						guildId: guildId,
-						userId: userId
-					})
-					.onConflictDoNothing();
-			} else {
-				await database
-					.delete(guildBlacklist)
-					.where(
-						and(eq(guildBlacklist.guildId, guildId), eq(guildBlacklist.userId, userId))
-					);
-			}
-			await this.recordAuditEvent(
-				database,
-				guildId,
-				actorId,
-				blocked ? 'blacklist.add' : 'blacklist.remove',
-				userId
-			);
-		});
-	}
-
-	public async setFormBlacklist(
+	public async changeFormBlacklist(
 		formId: string,
 		guildId: string,
 		actorId: string,
 		subjectType: 'user' | 'role',
-		subjectIds: readonly string[],
-		blocked: boolean,
+		change: { added: readonly string[]; removed: readonly string[] },
 		expectedRevision?: number
 	) {
 		await this.database.transaction(async (database) => {
@@ -261,10 +226,12 @@ export class FormService {
 			}
 
 			const field = subjectType === 'user' ? 'blacklist' : 'denyRoles';
-			const updateList = (identifiers: string[]) =>
-				blocked
-					? [...new Set([...identifiers, ...subjectIds])]
-					: identifiers.filter((identifier) => !subjectIds.includes(identifier));
+			const updateList = (identifiers: string[]) => [
+				...new Set([
+					...identifiers.filter((identifier) => !change.removed.includes(identifier)),
+					...change.added
+				])
+			];
 			const draftList = updateList(form.data[field]);
 
 			if (draftList.length > 100) {
@@ -291,38 +258,8 @@ export class FormService {
 				database,
 				guildId,
 				actorId,
-				`form.blacklist.${subjectType}.${blocked ? 'add' : 'remove'}`,
+				`form.blacklist.${subjectType}.update`,
 				formId
-			);
-		});
-	}
-
-	public async setRoleBlacklist(
-		guildId: string,
-		actorId: string,
-		roleId: string,
-		blocked: boolean
-	) {
-		await this.database.transaction(async (database) => {
-			if (blocked) {
-				await database
-					.insert(roleBlacklist)
-					.values({ guildId, roleId })
-					.onConflictDoNothing();
-			} else {
-				await database
-					.delete(roleBlacklist)
-					.where(
-						and(eq(roleBlacklist.guildId, guildId), eq(roleBlacklist.roleId, roleId))
-					);
-			}
-
-			await this.recordAuditEvent(
-				database,
-				guildId,
-				actorId,
-				blocked ? 'blacklist.role.add' : 'blacklist.role.remove',
-				roleId
 			);
 		});
 	}
@@ -346,36 +283,6 @@ export class FormService {
 		database: Queryable = this.database
 	) {
 		assertFormAccess(form, userId, memberRoleIds);
-		if (
-			(
-				await database
-					.select()
-					.from(guildBlacklist)
-					.where(
-						and(
-							eq(guildBlacklist.guildId, form.guildId),
-							eq(guildBlacklist.userId, userId)
-						)
-					)
-			).length
-		) {
-			throw new FormError('This form is not available to you.');
-		}
-		const deniedRoles = await database
-			.select()
-			.from(roleBlacklist)
-			.where(
-				and(
-					eq(roleBlacklist.guildId, form.guildId),
-					inArray(roleBlacklist.roleId, [...(memberRoleIds ?? [])])
-				)
-			)
-			.limit(1);
-
-		if (deniedRoles.length) {
-			throw new FormError('This form is not available to you.');
-		}
-
 		await this.assertSubmissionPolicy(form, userId, database);
 	}
 

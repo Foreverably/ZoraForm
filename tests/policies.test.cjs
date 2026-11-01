@@ -122,19 +122,28 @@ test('user and role grants are independent, scoped to a server and revocable', a
 	);
 });
 
-test('server and form blacklists accept both users and roles and override allow lists', async () => {
+test('form blacklists accept both users and roles and override allow lists', async () => {
 	const form = await fixture({ allowRoles: [staffRoleId] });
 	await formService.publishForm(form.id, guildId, actorId, form.data.revision);
 	const userId = randomUUID();
-	await formService.setRoleBlacklist(guildId, actorId, staffRoleId, true);
+	await formService.changeFormBlacklist(form.id, guildId, actorId, 'role', {
+		added: [staffRoleId],
+		removed: []
+	});
 	await assert.rejects(formService.startSession(form.id, userId, [staffRoleId]), /not available/);
-	await formService.setRoleBlacklist(guildId, actorId, staffRoleId, false);
-	await formService.setFormBlacklist(form.id, guildId, actorId, 'role', [staffRoleId], true);
+	await formService.changeFormBlacklist(form.id, guildId, actorId, 'role', {
+		added: [],
+		removed: [staffRoleId]
+	});
+	await formService.changeFormBlacklist(form.id, guildId, actorId, 'user', {
+		added: [userId],
+		removed: []
+	});
 	await assert.rejects(formService.startSession(form.id, userId, [staffRoleId]), /not available/);
-	await formService.setFormBlacklist(form.id, guildId, actorId, 'role', [staffRoleId], false);
-	await formService.setFormBlacklist(form.id, guildId, actorId, 'user', [userId], true);
-	await assert.rejects(formService.startSession(form.id, userId, [staffRoleId]), /not available/);
-	await formService.setFormBlacklist(form.id, guildId, actorId, 'user', [userId], false);
+	await formService.changeFormBlacklist(form.id, guildId, actorId, 'user', {
+		added: [],
+		removed: [userId]
+	});
 	assert.ok(await formService.startSession(form.id, userId, [staffRoleId]));
 });
 
@@ -224,6 +233,7 @@ test('submission browsing is paginated and reading depends on channel access rat
 	assert.match(text(await browser.applicantSubmissions(actorId, 2)), /Page 3 of 3/);
 	assert.doesNotMatch(text(lastPage), /zf:b:repair/);
 	assert.match(text(lastPage), new RegExp(`<@${actorId}>`));
+	assert.ok(text(lastPage).includes(`\`${actorId}\``), 'the submitter ID is listed');
 	await permissions.configure(guildId, manager, 'submissions.repair', 'role', staffRoleId, true);
 	assert.match(
 		text(await browser.submissions(context.guild, form.id, actorId, 2)),

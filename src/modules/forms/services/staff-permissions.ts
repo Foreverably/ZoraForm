@@ -83,6 +83,18 @@ export class StaffPermissions {
 		throw new FormError('You do not have form management permissions.');
 	}
 
+	public assertCanConfigure(identity: StaffIdentity) {
+		if (!identity.manageServer && !identity.administrator) {
+			throw new FormError(
+				'Only members with Manage Server or Administrator can configure staff permissions.'
+			);
+		}
+	}
+
+	public listGrants(guildId: string) {
+		return this.database.select().from(staffGrants).where(eq(staffGrants.guildId, guildId));
+	}
+
 	public async configure(
 		guildId: string,
 		identity: StaffIdentity,
@@ -91,11 +103,7 @@ export class StaffPermissions {
 		subjectId: string,
 		allowed: boolean
 	) {
-		if (!identity.manageServer && !identity.administrator) {
-			throw new FormError(
-				'Only members with Manage Server or Administrator can configure staff permissions.'
-			);
-		}
+		this.assertCanConfigure(identity);
 
 		const matchingGrant = and(
 			eq(staffGrants.guildId, guildId),

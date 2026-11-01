@@ -34,15 +34,6 @@ export const forms = pgTable(
 
 export const userLocks = pgTable('user_locks', { userId: text('user_id').primaryKey() });
 
-export const guildBlacklist = pgTable(
-	'guild_blacklist',
-	{
-		guildId: text('guild_id').notNull(),
-		userId: text('user_id').notNull()
-	},
-	(table) => [primaryKey({ columns: [table.guildId, table.userId] })]
-);
-
 export const sessions = pgTable(
 	'sessions',
 	{
@@ -160,15 +151,6 @@ export const staffGrants = pgTable(
 			columns: [table.guildId, table.capability, table.subjectType, table.subjectId]
 		})
 	]
-);
-
-export const roleBlacklist = pgTable(
-	'role_blacklist',
-	{
-		guildId: text('guild_id').notNull(),
-		roleId: text('role_id').notNull()
-	},
-	(table) => [primaryKey({ columns: [table.guildId, table.roleId] })]
 );
 
 export const rateLimitBuckets = pgTable('rate_limit_buckets', {

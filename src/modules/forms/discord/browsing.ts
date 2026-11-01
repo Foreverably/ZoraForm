@@ -186,7 +186,7 @@ export class FormBrowsing {
 		const description = records
 			.map(
 				(submission, index) =>
-					`${offset + index + 1}. <@${submission.userId}> · **${submission.status}** · <t:${Math.floor(submission.createdAt.getTime() / 1000)}:R>\n   ${submission.archived ? 'archived' : 'open'} · delivery: \`${submission.deliveryState}\`${submission.threadId ? ` · <#${submission.threadId}>` : ''}`
+					`${offset + index + 1}. <@${submission.userId}> · \`${submission.userId}\` · **${submission.status}** · <t:${Math.floor(submission.createdAt.getTime() / 1000)}:R>\n   ${submission.archived ? 'archived' : 'open'} · delivery: \`${submission.deliveryState}\`${submission.threadId ? ` · <#${submission.threadId}>` : ''}`
 			)
 			.join('\n\n');
 		const identity = await this.permissions.identify(guild, actorId);

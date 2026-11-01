@@ -22,6 +22,7 @@ import { formQuestionSchema, discordSnowflakeSchema } from '../domain/schemas';
 import { FormError } from '../domain/rules';
 import type { FormConfiguration } from '../domain/types';
 import { accessPanel, blacklistSubject, readAccessChange, updateAccessList } from './access-panel';
+import { limitsPanel, updateLimit } from './limits-panel';
 import { managePanel, panel, buttons, button, withoutNumbering } from './components';
 
 type BuilderInteraction = ButtonInteraction | AnySelectMenuInteraction | ModalSubmitInteraction;
@@ -85,9 +86,7 @@ export class FormBuilder {
 						? 'forms.blacklist'
 						: 'forms.edit';
 		const isNavigation =
-			segments[1] === 'access'
-				? segments[5] === 'open'
-				: segments[1] === 'm' && (segments[4] === 'back' || segments[4] === 'access');
+			segments[1] === 'm' && (segments[4] === 'back' || segments[4] === 'access');
 
 		if (isNavigation) {
 			await this.browsing.assertManagement(guild, interaction.user.id);
@@ -134,42 +133,49 @@ export class FormBuilder {
 		}
 
 		if (segments[1] === 'access') {
+			if (!interaction.isAnySelectMenu()) {
+				throw new FormError('Use the user or role selector.');
+			}
+
 			await interaction.deferUpdate();
+			const change = readAccessChange(interaction, segments, form.data);
+			const subject = blacklistSubject(change.category);
 
-			if (segments[5] !== 'open') {
-				if (!interaction.isAnySelectMenu()) {
-					throw new FormError('Use the user or role selector.');
-				}
-
-				const change = readAccessChange(interaction, segments);
-				const subject = blacklistSubject(change.category);
-
-				if (subject) {
-					await this.formService.setFormBlacklist(
-						formId,
-						guild.id,
-						interaction.user.id,
-						subject,
-						change.selected,
-						change.adding,
-						change.revision
-					);
-				} else {
-					await this.formService.editFormDraft(
-						formId,
-						guild.id,
-						interaction.user.id,
-						(configuration) => updateAccessList(configuration, change)
-					);
-				}
+			if (subject) {
+				await this.formService.changeFormBlacklist(
+					formId,
+					guild.id,
+					interaction.user.id,
+					subject,
+					change,
+					change.revision
+				);
+			} else {
+				await this.formService.editFormDraft(
+					formId,
+					guild.id,
+					interaction.user.id,
+					(configuration) => updateAccessList(configuration, change)
+				);
 			}
 
 			await interaction.editReply(
-				accessPanel(
-					await this.formService.findForm(formId),
-					interaction.user.id,
-					segments[4]
-				)
+				accessPanel(await this.formService.findForm(formId), interaction.user.id)
+			);
+			return;
+		}
+
+		if (segments[1] === 'limits' && interaction.isStringSelectMenu()) {
+			const selectedValue = interaction.values[0];
+			await interaction.deferUpdate();
+			await this.formService.editFormDraft(
+				formId,
+				guild.id,
+				interaction.user.id,
+				(configuration) => updateLimit(configuration, segments, selectedValue)
+			);
+			await interaction.editReply(
+				limitsPanel(await this.formService.findForm(formId), interaction.user.id)
 			);
 			return;
 		}
@@ -246,30 +252,8 @@ export class FormBuilder {
 		}
 
 		if (action === 'policy') {
-			await interaction.showModal(
-				modal(modalId, 'Submission policy', [
-					{
-						id: 'total',
-						label: 'Lifetime submissions per user (0 = unlimited)',
-						value: String(form.data.totalLimit)
-					},
-					{
-						id: 'pending',
-						label: 'Pending submissions per user (0 = unlimited)',
-						value: String(form.data.pendingLimit)
-					},
-					{
-						id: 'cooldown',
-						label: 'Cooldown in seconds (0 = none)',
-						value: String(form.data.cooldownSeconds)
-					},
-					{
-						id: 'retention',
-						label: 'Keep submitted answers for days (1–365)',
-						value: String(form.data.retentionDays)
-					}
-				])
-			);
+			await interaction.deferUpdate();
+			await interaction.editReply(limitsPanel(form, interaction.user.id));
 			return;
 		}
 
@@ -474,15 +458,6 @@ export class FormBuilder {
 						...configuration,
 						name: value('name'),
 						description: value('description')
-					};
-				}
-				if (action === 'policy') {
-					return {
-						...configuration,
-						totalLimit: Number(value('total')),
-						pendingLimit: Number(value('pending')),
-						cooldownSeconds: Number(value('cooldown')),
-						retentionDays: Number(value('retention'))
 					};
 				}
 				if (action === 'review') {

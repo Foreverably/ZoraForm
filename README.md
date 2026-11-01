@@ -26,20 +26,12 @@ Other staff can receive individual capabilities through a user grant, a role gra
 | `forms.edit`         | Editing questions, details, access rules, policies, and submission destinations |
 | `forms.publish`      | Publishing or reopening a form                                                  |
 | `forms.archive`      | Closing a form to applicants                                                    |
-| `forms.blacklist`    | Blocking or unblocking users and roles                                          |
+| `forms.blacklist`    | Blocking or unblocking users and roles on a form                                |
 | `submissions.decide` | Accepting or rejecting a submission                                             |
 | `submissions.reply`  | Sending an applicant a staff reply                                              |
 | `submissions.repair` | Recovering failed submission delivery                                           |
 
-Only members with Manage Server or Administrator can grant or revoke capabilities:
-
-```text
-/form permission action:submissions.decide allowed:true role:@Reviewers
-/form permission action:submissions.reply allowed:true user:@Moderator
-/form permission action:forms.edit allowed:false role:@FormerEditors
-```
-
-Exactly one user or role must be selected. Grants are server-specific and checked against live membership on each action. Permission to reply does not grant permission to decide, and permission to edit does not grant permission to publish. Discord command visibility remains configurable through Discord's own integration settings; the bot enforces capability checks independently.
+Only members with Manage Server or Administrator can grant or revoke capabilities. `/form permissions` opens a panel listing each capability; choose one to pick its roles and users from Discord's own selectors, and changes apply as soon as a selector closes. Grants are server-specific and checked against live membership on each action. Permission to reply does not grant permission to decide, and permission to edit does not grant permission to publish. Discord command visibility remains configurable through Discord's own integration settings; the bot enforces capability checks independently.
 
 ## Create forms
 
@@ -55,16 +47,9 @@ Replacing files, removing them, or removing their question retires the old messa
 
 Publishing fails if a reference file is no longer available. If one disappears after publishing, applicants still receive the question, with a notice in place of the missing file. Temporary download failures retry instead of sending the question without its files.
 
-Use Access for allowed roles, required roles, blacklisted roles, and blocked users on one form. Searchable role and user menus add or remove up to 25 entries per selection without replacing the rest of a list (up to 100 entries per list). Blacklist changes need `forms.blacklist` and apply immediately, including to the published form; allowed and required roles stay in the draft until Publish. Denials take precedence: any blacklisted role blocks access, all required roles must be present, and at least one allowed role must be present when an allow-list is configured. An empty allow-list imposes no role restriction.
+Use Access for allowed roles, required roles, blacklisted roles, and blocked users on one form. The panel shows each list directly in a role or user selector, pre-filled with its current entries; changes save as soon as a selector closes. Selectors show the first 25 entries and lists hold up to 100, with entries past the first 25 left in place. Blacklist changes need `forms.blacklist` and apply immediately, including to the published form; allowed and required roles stay in the draft until Publish. Denials take precedence: any blacklisted role blocks access, all required roles must be present, and at least one allowed role must be present when an allow-list is configured. An empty allow-list imposes no role restriction.
 
-Use `/form blacklist` to block a user or role from every form in the server:
-
-```text
-/form blacklist blocked:true role:@Restricted
-/form blacklist blocked:false user:@Applicant
-```
-
-Submission policies configure lifetime and pending limits plus a cooldown. Zero disables a particular limit. Submitted answers are retained for 1–365 days, with 30 days as the default. Question, allowed-role, required-role, and policy edits stay in the draft until Publish; blacklists take effect immediately.
+The Limits panel sets, from menus, how many times one person can submit, how many of their submissions can wait for review at once, how long they wait between submissions, and when submissions are deleted (30 days by default). When that time runs out, the bot deletes the answers, files, thread, and applicant card, and an undecided submission is closed as rejected. Question, allowed-role, required-role, and policy edits stay in the draft until Publish; blacklists take effect immediately.
 
 Publishing validates the submission channel, the bot's permissions, question configuration, and role references. `/form list` opens a paginated browser where selecting a form opens its management panel, which holds every form action including Publish, Archive, and Submissions. Previews include every question and choice, with pagination for long content.
 

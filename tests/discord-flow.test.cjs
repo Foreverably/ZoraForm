@@ -660,12 +660,15 @@ test('Sapphire discovers the form command, DM listener and all component handler
 		assert.equal(commandPayload.default_member_permissions, null);
 		assert.match(commandPayload.description, /Test Forms/);
 		assert.deepEqual(commandPayload.options.map((option) => option.name).sort(), [
-			'blacklist',
 			'create',
 			'list',
-			'permission',
+			'permissions',
 			'submissions'
 		]);
+		assert.deepEqual(
+			commandPayload.options.find((option) => option.name === 'permissions').options ?? [],
+			[]
+		);
 		assert.ok(
 			commandPayload.options
 				.flatMap((subcommand) => subcommand.options ?? [])
@@ -1255,7 +1258,7 @@ test('a retired file that staff already deleted is forgotten', async () => {
 	assert.equal(await retiredRecord(messageId), undefined);
 });
 
-test('native role and user pickers edit batches without losing existing access entries', async () => {
+test('access lists appear directly as pre-filled selectors and keep entries they cannot show', async () => {
 	const flow = await setupFlow();
 	const editor = managementEditor(flow);
 	const initialRoles = Array.from({ length: 30 }, (_, index) =>
@@ -1267,66 +1270,80 @@ test('native role and user pickers edit batches without losing existing access e
 	}));
 	const form = await formService.findForm(flow.form.id);
 	const accessPrefix = `zf:access:${form.id}:${reviewerId}`;
-	await editor.builder.handleInteraction(editor.interaction(`${accessPrefix}:allowRoles:open`));
-	let payload = componentTree(editor.message.payload);
-	assert.equal(
-		payload[0].components.filter(
-			(component) => component.type === 1 && component.components[0].type === 6
-		).length,
-		2
+	const selectors = () =>
+		componentTree(editor.message.payload)[0]
+			.components.filter((component) => component.type === 1)
+			.flatMap((row) => row.components)
+			.filter((control) => control.type === 5 || control.type === 6);
+	await editor.builder.handleInteraction(
+		editor.interaction(`zf:m:${form.id}:${reviewerId}:access`)
 	);
+	assert.deepEqual(
+		selectors().map((selector) => selector.type),
+		[6, 6, 6, 5]
+	);
+	assert.equal(selectors()[0].default_values.length, 25);
+	assert.equal(selectors()[0].min_values, 0);
+	assert.match(JSON.stringify(componentTree(editor.message.payload)), /5 more not shown/);
+	assert.doesNotMatch(
+		JSON.stringify(componentTree(editor.message.payload)),
+		/"label":"Allowed roles"/
+	);
+
+	const shownRoles = initialRoles.slice(0, 25);
 	const roleId = '12345678901234999';
 	await editor.builder.handleInteraction(
-		editor.interaction(`${accessPrefix}:allowRoles:add:${form.data.revision}`, 'role', [roleId])
+		editor.interaction(`${accessPrefix}:allowRoles:set:${form.data.revision}`, 'role', [
+			...shownRoles,
+			roleId
+		])
 	);
 	let saved = await formService.findForm(form.id);
 	assert.deepEqual(saved.data.allowRoles, [...initialRoles, roleId]);
 	await assert.rejects(
 		editor.builder.handleInteraction(
-			editor.interaction(`${accessPrefix}:allowRoles:remove:${form.data.revision}`, 'role', [
-				roleId
-			])
+			editor.interaction(`${accessPrefix}:allowRoles:set:${form.data.revision}`, 'role', [])
 		),
 		/changed/
 	);
 	await editor.builder.handleInteraction(
-		editor.interaction(`${accessPrefix}:allowRoles:remove:${saved.data.revision}`, 'role', [
-			roleId
-		])
+		editor.interaction(
+			`${accessPrefix}:allowRoles:set:${saved.data.revision}`,
+			'role',
+			shownRoles.slice(1)
+		)
 	);
 	saved = await formService.findForm(form.id);
-	assert.deepEqual(saved.data.allowRoles, initialRoles);
-	await editor.builder.handleInteraction(editor.interaction(`${accessPrefix}:blacklist:open`));
-	payload = componentTree(editor.message.payload);
-	assert.equal(
-		payload[0].components.filter(
-			(component) => component.type === 1 && component.components[0].type === 5
-		).length,
-		2
-	);
+	assert.deepEqual(saved.data.allowRoles, [...initialRoles.slice(1), roleId]);
+	assert.deepEqual(saved.published.allowRoles, [], 'allowed roles wait for publishing');
+
 	await editor.builder.handleInteraction(
-		editor.interaction(`${accessPrefix}:blacklist:add:${saved.data.revision}`, 'user', [
+		editor.interaction(`${accessPrefix}:blacklist:set:${saved.data.revision}`, 'user', [
 			reviewerId
 		])
 	);
 	const blocked = await formService.findForm(form.id);
 	assert.deepEqual(blocked.data.blacklist, [reviewerId]);
 	assert.deepEqual(blocked.published.blacklist, [reviewerId], 'blocks apply without publishing');
-	assert.deepEqual(blocked.published.allowRoles, []);
-	await assert.rejects(
-		editor.builder.handleInteraction(
-			editor.interaction(`${accessPrefix}:blacklist:remove:${saved.data.revision}`, 'user', [
-				reviewerId
-			])
-		),
-		/changed/
-	);
+	assert.deepEqual(selectors()[3].default_values, [{ id: reviewerId, type: 'user' }]);
 	await editor.builder.handleInteraction(
-		editor.interaction(`${accessPrefix}:blacklist:remove:${blocked.data.revision}`, 'user', [
-			reviewerId
+		editor.interaction(`${accessPrefix}:denyRoles:set:${blocked.data.revision}`, 'role', [
+			roleId
 		])
 	);
+	const roleBlocked = await formService.findForm(form.id);
+	assert.deepEqual(roleBlocked.published.denyRoles, [roleId]);
+	assert.deepEqual(roleBlocked.published.blacklist, [reviewerId]);
+	await editor.builder.handleInteraction(
+		editor.interaction(`${accessPrefix}:blacklist:set:${roleBlocked.data.revision}`, 'user', [])
+	);
 	assert.deepEqual((await formService.findForm(form.id)).published.blacklist, []);
+	await assert.rejects(
+		editor.builder.handleInteraction(
+			editor.interaction(`${accessPrefix}:denyRoles:set:0`, 'user', [reviewerId])
+		),
+		/matching user or role/
+	);
 });
 
 test('blacklist-only staff can open Access and block users but not change other lists', async () => {
@@ -1341,9 +1358,8 @@ test('blacklist-only staff can open Access and block users but not change other 
 		subjectType: 'role',
 		subjectId: blacklistRole
 	});
-	const blacklistOnly = (interaction) => ({
-		...interaction,
-		guild: {
+	const blacklistOnly = (interaction) => {
+		interaction.guild = {
 			...interaction.guild,
 			members: {
 				fetch: async ({ user }) => ({
@@ -1352,17 +1368,15 @@ test('blacklist-only staff can open Access and block users but not change other 
 					permissions: { has: () => false }
 				})
 			}
-		}
-	});
+		};
+		return interaction;
+	};
 	await editor.builder.handleInteraction(
 		blacklistOnly(editor.interaction(`zf:m:${form.id}:${reviewerId}:access`))
 	);
 	await editor.builder.handleInteraction(
-		blacklistOnly(editor.interaction(`${accessPrefix}:blacklist:open`))
-	);
-	await editor.builder.handleInteraction(
 		blacklistOnly(
-			editor.interaction(`${accessPrefix}:blacklist:add:${form.data.revision}`, 'user', [
+			editor.interaction(`${accessPrefix}:blacklist:set:${form.data.revision}`, 'user', [
 				reviewerId
 			])
 		)
@@ -1372,7 +1386,7 @@ test('blacklist-only staff can open Access and block users but not change other 
 	await assert.rejects(
 		editor.builder.handleInteraction(
 			blacklistOnly(
-				editor.interaction(`${accessPrefix}:allowRoles:add:${data.revision}`, 'role', [
+				editor.interaction(`${accessPrefix}:allowRoles:set:${data.revision}`, 'role', [
 					blacklistRole
 				])
 			)
@@ -1382,6 +1396,205 @@ test('blacklist-only staff can open Access and block users but not change other 
 	await database
 		.delete(schema.staffGrants)
 		.where(eq(schema.staffGrants.subjectId, blacklistRole));
+});
+
+test('submission limits are chosen from menus that explain deletion', async () => {
+	const flow = await setupFlow();
+	const editor = managementEditor(flow);
+	const limitSelects = () =>
+		componentTree(editor.message.payload)
+			.flatMap((container) => container.components)
+			.filter((component) => component.type === 1)
+			.flatMap((row) => row.components)
+			.filter((control) => control.type === 3);
+	const selectedLabels = () =>
+		limitSelects().map((select) => select.options.find((option) => option.default).label);
+	await database
+		.update(schema.forms)
+		.set({
+			data: {
+				...(await formService.findForm(flow.form.id)).data,
+				cooldownSeconds: 90
+			}
+		})
+		.where(eq(schema.forms.id, flow.form.id));
+
+	await editor.builder.handleInteraction(
+		editor.interaction(`zf:m:${flow.form.id}:${reviewerId}:policy`)
+	);
+	assert.equal(editor.modals.length, 0);
+	assert.match(
+		JSON.stringify(componentTree(editor.message.payload)),
+		/deletes the answers, files/
+	);
+	assert.deepEqual(selectedLabels(), [
+		'Unlimited submissions per person',
+		'1 waiting for review at a time',
+		'Wait 90 seconds between submissions',
+		'Delete submissions after 30 days'
+	]);
+
+	const [totalSelect, , cooldownSelect, retentionSelect] = limitSelects();
+	await editor.builder.handleInteraction(
+		editor.interaction(cooldownSelect.custom_id, 'string', ['86400'])
+	);
+	await assert.rejects(
+		editor.builder.handleInteraction(
+			editor.interaction(retentionSelect.custom_id, 'string', ['90'])
+		),
+		/limits changed/
+	);
+	const [, , , currentRetention] = limitSelects();
+	await editor.builder.handleInteraction(
+		editor.interaction(currentRetention.custom_id, 'string', ['90'])
+	);
+	const saved = await formService.findForm(flow.form.id);
+	assert.equal(saved.data.cooldownSeconds, 86400);
+	assert.equal(saved.data.retentionDays, 90);
+	assert.equal(saved.published.retentionDays, 30, 'limits stay in the draft until published');
+	assert.equal(selectedLabels()[2], 'Wait 1 day between submissions');
+	assert.ok(totalSelect.options.length <= 25);
+	await assert.rejects(
+		editor.builder.handleInteraction(
+			editor.interaction(
+				`zf:limits:${flow.form.id}:${reviewerId}:revision:${saved.data.revision}`,
+				'string',
+				['1']
+			)
+		),
+		/supported limit/
+	);
+});
+
+test('staff permissions are managed from native selectors on one panel', async () => {
+	const { StaffPermissions } = require('../dist/modules/forms/services/staff-permissions');
+	const {
+		StaffPermissionsPanel
+	} = require('../dist/modules/forms/discord/staff-permissions-panel');
+	const { routeFormInteraction } = require('../dist/modules/forms/discord/interaction-router');
+	const { createRuntime } = require('../dist/modules/forms/runtime');
+	const flow = await setupFlow();
+	const editor = managementEditor(flow);
+	const permissions = new StaffPermissions(database);
+	const staffPanel = new StaffPermissionsPanel(formService, permissions);
+	const isolatedGuildId = '12345678901234222';
+	const interaction = (...interactionArguments) => {
+		const prepared = editor.interaction(...interactionArguments);
+		prepared.guild = { ...prepared.guild, id: isolatedGuildId };
+		return prepared;
+	};
+	const manager = {
+		userId: reviewerId,
+		roleIds: [],
+		manageServer: true,
+		administrator: false
+	};
+	const grants = async (subjectType) =>
+		(await permissions.listGrants(isolatedGuildId))
+			.filter(
+				(grant) =>
+					grant.capability === 'submissions.decide' && grant.subjectType === subjectType
+			)
+			.map((grant) => grant.subjectId)
+			.sort();
+	const selectFor = (kind) =>
+		componentTree(editor.message.payload)
+			.flatMap((container) => container.components)
+			.filter((component) => component.type === 1)
+			.flatMap((row) => row.components)
+			.find((control) => control.type === kind);
+	const prefix = `zf:p:${reviewerId}`;
+
+	editor.message.payload = await staffPanel.overview(isolatedGuildId, manager);
+	assert.match(JSON.stringify(componentTree(editor.message.payload)), /Server managers only/);
+	await assert.rejects(
+		staffPanel.overview(isolatedGuildId, { ...manager, manageServer: false }),
+		/Only members with Manage Server/
+	);
+
+	await staffPanel.handle(interaction(`${prefix}:open`, 'string', ['submissions.decide']));
+	assert.equal(selectFor(6).min_values, 0);
+	assert.equal(selectFor(6).default_values, undefined);
+
+	const [firstRole, secondRole] = ['12345678901234301', '12345678901234302'];
+	await staffPanel.handle(
+		interaction(`${prefix}:submissions.decide:role`, 'role', [firstRole, secondRole])
+	);
+	assert.deepEqual(await grants('role'), [firstRole, secondRole]);
+	assert.deepEqual(
+		selectFor(6).default_values.map((value) => value.id),
+		[firstRole, secondRole]
+	);
+	await staffPanel.handle(interaction(`${prefix}:submissions.decide:role`, 'role', [secondRole]));
+	assert.deepEqual(await grants('role'), [secondRole]);
+
+	await staffPanel.handle(interaction(`${prefix}:submissions.decide:user`, 'user', [reviewerId]));
+	assert.deepEqual(await grants('user'), [reviewerId]);
+	assert.deepEqual(
+		selectFor(5).default_values.map((value) => value.id),
+		[reviewerId]
+	);
+	await staffPanel.handle(interaction(`${prefix}:submissions.decide:user`, 'user', []));
+	assert.deepEqual(await grants('user'), []);
+	assert.deepEqual(await grants('role'), [secondRole], 'each selector only changes its own list');
+
+	for (let index = 0; index < 26; index++) {
+		await permissions.configure(
+			isolatedGuildId,
+			manager,
+			'submissions.decide',
+			'role',
+			String(12345678901235000n + BigInt(index)),
+			true
+		);
+	}
+	await staffPanel.handle(interaction(`${prefix}:open`, 'string', ['submissions.decide']));
+	assert.match(JSON.stringify(componentTree(editor.message.payload)), /2 more not shown/);
+	const entriesBefore = (await grants('role')).length;
+	const shownRoles = selectFor(6).default_values.map((value) => value.id);
+	await staffPanel.handle(
+		interaction(`${prefix}:submissions.decide:role`, 'role', shownRoles.slice(1))
+	);
+	assert.equal(
+		(await grants('role')).length,
+		entriesBefore - 1,
+		'entries hidden from the selector keep their permission'
+	);
+
+	await staffPanel.handle(interaction(`${prefix}:back`));
+	assert.match(JSON.stringify(componentTree(editor.message.payload)), /Choose a permission/);
+	await assert.rejects(
+		staffPanel.handle(interaction('zf:p:someone-else:back')),
+		/Open your own panel/
+	);
+	await assert.rejects(
+		staffPanel.handle(interaction(`${prefix}:open`, 'string', ['forms.everything'])),
+		/supported staff permission/
+	);
+	await assert.rejects(
+		staffPanel.handle(interaction(`${prefix}:submissions.decide:role`, 'user', [reviewerId])),
+		/matching role or user/
+	);
+	const notManager = interaction(`${prefix}:back`);
+	notManager.guild = {
+		...notManager.guild,
+		members: {
+			fetch: async () => ({
+				roles: { cache: new Collection() },
+				permissions: { has: () => false }
+			})
+		}
+	};
+	await assert.rejects(staffPanel.handle(notManager), /Only members with Manage Server/);
+
+	const runtime = createRuntime(flow.discord.client, 'postgres://unused@127.0.0.1:1/unused');
+	Object.assign(runtime, { staffPanel, rateLimits: { enforce: async () => undefined } });
+	try {
+		await routeFormInteraction(interaction(`${prefix}:back`));
+		assert.match(JSON.stringify(componentTree(editor.message.payload)), /Choose a permission/);
+	} finally {
+		await runtime.connection.close();
+	}
 });
 
 test('form panels replace ID commands for submissions and delivery recovery', async () => {
@@ -1498,12 +1711,14 @@ test('access controls reject other owners and revoked permissions before updatin
 	const editor = managementEditor(flow);
 	await assert.rejects(
 		editor.builder.handleInteraction(
-			editor.interaction(`zf:access:${flow.form.id}:someone-else:blacklist:open`)
+			editor.interaction(`zf:access:${flow.form.id}:someone-else:blacklist:set:1`, 'user', [])
 		),
 		/own panel/
 	);
 	const interaction = editor.interaction(
-		`zf:access:${flow.form.id}:${reviewerId}:blacklist:open`
+		`zf:access:${flow.form.id}:${reviewerId}:blacklist:set:1`,
+		'user',
+		[]
 	);
 	interaction.guild = {
 		...interaction.guild,

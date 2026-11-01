@@ -9,6 +9,7 @@ import { DiscordDelivery } from './discord/delivery-worker';
 import { ApplicantFlow } from './discord/applicant-flow';
 import { FormBuilder } from './discord/form-builder';
 import { SubmissionRecovery } from './discord/submission-recovery';
+import { StaffPermissionsPanel } from './discord/staff-permissions-panel';
 import { FormError } from './domain/rules';
 
 let activeRuntime: ReturnType<typeof createRuntime> | undefined;
@@ -24,6 +25,7 @@ export function createRuntime(client: Client, connectionString: string) {
 	const browsing = new FormBrowsing(formService, permissions, client);
 	const builder = new FormBuilder(formService, delivery, permissions, browsing);
 	const recovery = new SubmissionRecovery(formService, delivery, permissions, browsing);
+	const staffPanel = new StaffPermissionsPanel(formService, permissions);
 	const runtime = {
 		connection,
 		formService,
@@ -34,7 +36,8 @@ export function createRuntime(client: Client, connectionString: string) {
 		delivery,
 		applicants,
 		builder,
-		recovery
+		recovery,
+		staffPanel
 	};
 	activeRuntime = runtime;
 	return runtime;

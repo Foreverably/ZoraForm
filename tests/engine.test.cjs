@@ -244,7 +244,13 @@ test('blacklist added mid-session prevents answers but permits cancellation', as
 	const session = await delivered(
 		await formService.startSession(fixtureData.form.id, fixtureData.user, [])
 	);
-	await formService.setGuildBlacklist(fixtureData.form.guildId, reviewer, fixtureData.user, true);
+	await formService.changeFormBlacklist(
+		fixtureData.form.id,
+		fixtureData.form.guildId,
+		reviewer,
+		'user',
+		{ added: [fixtureData.user], removed: [] }
+	);
 	await assert.rejects(
 		formService.saveAnswer(session.id, fixtureData.user, 0, [], event('200'), 'valid'),
 		/not available/
