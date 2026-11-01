@@ -1,34 +1,62 @@
 import './lib/setup';
+
 import { LogLevel, SapphireClient } from '@sapphire/framework';
 import { GatewayIntentBits, Partials } from 'discord.js';
+import { createRuntime } from './modules/forms/runtime';
+
 const client = new SapphireClient({
 	logger: { level: LogLevel.Info },
 	intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages],
 	partials: [Partials.Channel],
 	loadMessageCommandListeners: false,
-	allowedMentions: {
-		parse: [],
-		repliedUser: false
-	}
+	allowedMentions: { parse: [], repliedUser: false }
 });
+
+let runtime: ReturnType<typeof createRuntime> | undefined;
+let shuttingDown = false;
+
+async function shutdown() {
+	if (shuttingDown) {
+		return;
+	}
+
+	shuttingDown = true;
+	await runtime?.delivery.stop();
+	await client.destroy();
+	await runtime?.connection.close();
+}
+
 async function main() {
 	const token = process.env.DISCORD_TOKEN?.trim();
-	if (!token) {
-		client.logger.error('Set DISCORD_TOKEN in the root .env file before starting ZoraForms.');
+	const databaseUrl = process.env.DATABASE_URL?.trim();
+
+	if (!token || !databaseUrl) {
+		client.logger.error(
+			'Set DISCORD_TOKEN and DATABASE_URL in the root .env file before starting ZoraForms.'
+		);
 		process.exitCode = 1;
 		return;
 	}
+
 	try {
+		runtime = createRuntime(client, databaseUrl);
+		await runtime.connection.applyMigrations();
 		await client.login(token);
-	} catch (error) {
-		client.logger.fatal(error);
-		await client.destroy();
+	} catch {
+		client.logger.error(
+			'Startup failed. Check the database connection, migrations, and Discord token.'
+		);
+		await shutdown();
 		process.exitCode = 1;
 	}
 }
+
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 	process.once(signal, () => {
-		void client.destroy();
+		void shutdown().catch(() => {
+			process.exitCode = 1;
+		});
 	});
 }
+
 void main();
