@@ -2,6 +2,11 @@ import type { FormRecord, FormQuestion, AttachmentReference, QuestionAnswer } fr
 
 export class FormError extends Error {}
 
+export class StaffPermissionError extends FormError {}
+
+export const outdatedControl =
+	'This button or menu is out of date. Open the panel again and retry.';
+
 // The applicant can use this form but has reached one of its limits, so the reason can be shown.
 export class SubmissionLimitError extends FormError {}
 
@@ -64,14 +69,12 @@ export function validateQuestionAnswer(
 ): QuestionAnswer {
 	if (question.type === 'attachment') {
 		if (!attachments.length || attachments.length > 3) {
-			throw new FormError(
-				'Attach between one and three attachments (8 MiB each; 20 MiB total).'
-			);
+			throw new FormError('Attach 1–3 files, up to 8 MiB each and 20 MiB total.');
 		}
 		return attachments;
 	}
 	if (attachments.length) {
-		throw new FormError('Reply using the requested answer type.');
+		throw new FormError('This question needs a written answer, not a file.');
 	}
 	const text = answerText.trim();
 	if (question.type === 'text') {
@@ -82,7 +85,7 @@ export function validateQuestionAnswer(
 	}
 	if (question.type === 'choice') {
 		if (!question.options.includes(text)) {
-			throw new FormError('Choose an option using the current select menu.');
+			throw new FormError('Pick your answer from the menu on the latest question.');
 		}
 		return text;
 	}

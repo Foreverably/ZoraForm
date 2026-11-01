@@ -9,8 +9,8 @@ import {
 	type ModalSubmitInteraction
 } from 'discord.js';
 import { formsRuntime } from '../runtime';
-import { explainFormError, managePanel, panel, buttons, button } from './components';
-import { FormError } from '../domain/rules';
+import { errorPanel, managePanel, buttons, button } from './components';
+import { FormError, outdatedControl } from '../domain/rules';
 
 type FormInteraction = ButtonInteraction | AnySelectMenuInteraction | ModalSubmitInteraction;
 
@@ -23,14 +23,16 @@ async function browse(interaction: ButtonInteraction | AnySelectMenuInteraction)
 		: segments[3];
 
 	if (ownerId !== interaction.user.id) {
-		throw new FormError('Open your own browser to use these controls.');
+		throw new FormError(
+			'This panel belongs to someone else. Run the command yourself to open your own panel.'
+		);
 	}
 
 	await interaction.deferUpdate();
 
 	if (kind === 'mine') {
 		if (interaction.inGuild()) {
-			throw new FormError('Browse your submissions in DMs with the bot.');
+			throw new FormError('You can see your submissions in your DMs with the bot.');
 		}
 
 		await interaction.editReply(
@@ -42,7 +44,7 @@ async function browse(interaction: ButtonInteraction | AnySelectMenuInteraction)
 	const guild = interaction.guild;
 
 	if (!guild) {
-		throw new FormError('Use the staff browser in its server.');
+		throw new FormError('Use this in the server it belongs to.');
 	}
 
 	if (kind === 'forms') {
@@ -61,7 +63,7 @@ async function browse(interaction: ButtonInteraction | AnySelectMenuInteraction)
 
 	if (kind === 'readopen') {
 		if (!interaction.isStringSelectMenu()) {
-			throw new FormError('Choose a form from the menu.');
+			throw new FormError(outdatedControl);
 		}
 
 		await interaction.editReply(
@@ -95,7 +97,7 @@ async function browse(interaction: ButtonInteraction | AnySelectMenuInteraction)
 	if (kind === 'preview') {
 		if (form.data.revision !== Number(segments[5])) {
 			throw new FormError(
-				'This draft changed. Open Preview again from its management panel.'
+				'This form was just edited. Press Preview again to see the latest version.'
 			);
 		}
 
@@ -106,7 +108,7 @@ async function browse(interaction: ButtonInteraction | AnySelectMenuInteraction)
 	}
 
 	if (kind !== 'open') {
-		throw new FormError('Unknown browser action.');
+		throw new FormError(outdatedControl);
 	}
 
 	await interaction.editReply(managePanel(form, ownerId));
@@ -120,7 +122,7 @@ export async function routeFormInteraction(interaction: FormInteraction) {
 
 		if (route === 'b') {
 			if (interaction.isModalSubmit()) {
-				throw new FormError('Use the browser buttons.');
+				throw new FormError(outdatedControl);
 			}
 
 			await browse(interaction);
@@ -129,7 +131,7 @@ export async function routeFormInteraction(interaction: FormInteraction) {
 
 		if (route === 'p') {
 			if (interaction.isModalSubmit()) {
-				throw new FormError('Use the permission selectors.');
+				throw new FormError(outdatedControl);
 			}
 
 			await runtime.staffPanel.handle(interaction);
@@ -146,11 +148,11 @@ export async function routeFormInteraction(interaction: FormInteraction) {
 				interaction.guildId !== submission.guildId ||
 				interaction.channelId !== submission.threadId
 			) {
-				throw new FormError('Use these controls in the submission thread.');
+				throw new FormError('Use these buttons in the submission thread.');
 			}
 
-			if (action !== 'accepted' && action !== 'rejected' && action !== 'reply') {
-				throw new FormError('Unknown submission action.');
+			if (action !== 'accepted' && action !== 'rejected') {
+				throw new FormError(outdatedControl);
 			}
 
 			const identity = await runtime.permissions.identify(
@@ -159,32 +161,22 @@ export async function routeFormInteraction(interaction: FormInteraction) {
 			);
 			await runtime.permissions.assertAllowed(
 				submission.guildId,
-				action === 'reply' ? 'submissions.reply' : 'submissions.decide',
+				'submissions.decide',
 				identity
 			);
 
 			if (interaction.isButton()) {
-				if (action !== 'reply' && submission.status !== 'pending') {
-					throw new FormError(`This submission is already ${submission.status}.`);
+				if (submission.status !== 'pending') {
+					throw new FormError(`This submission was already ${submission.status}.`);
 				}
 
 				await interaction.showModal(
 					new ModalBuilder()
 						.setCustomId(interaction.customId)
-						.setTitle(
-							action === 'reply'
-								? 'Reply to applicant'
-								: action === 'accepted'
-									? 'Accept submission'
-									: 'Reject submission'
-						)
+						.setTitle(action === 'accepted' ? 'Accept submission' : 'Reject submission')
 						.addLabelComponents(
 							new LabelBuilder()
-								.setLabel(
-									action === 'reply'
-										? 'Message sent to the applicant'
-										: 'Reason sent to the applicant'
-								)
+								.setLabel('Reason sent to the applicant')
 								.setTextInputComponent(
 									new TextInputBuilder()
 										.setCustomId('reason')
@@ -198,24 +190,10 @@ export async function routeFormInteraction(interaction: FormInteraction) {
 			}
 
 			if (!interaction.isModalSubmit()) {
-				throw new FormError('Use the submission action buttons.');
+				throw new FormError(outdatedControl);
 			}
 
 			await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
-			if (action === 'reply') {
-				await runtime.formService.replyToSubmission(
-					submission.id,
-					identity,
-					interaction.channelId,
-					interaction.fields.getTextInputValue('reason'),
-					interaction.id
-				);
-				await interaction.editReply(
-					'Reply saved and queued for delivery to the applicant.'
-				);
-				return;
-			}
 
 			await runtime.formService.recordDecision(
 				submission.id,
@@ -236,12 +214,12 @@ export async function routeFormInteraction(interaction: FormInteraction) {
 				interaction.isModalSubmit() ||
 				(!interaction.isButton() && !interaction.isStringSelectMenu())
 			) {
-				throw new FormError('Use the questionnaire controls.');
+				throw new FormError(outdatedControl);
 			}
 
 			if (route === 'directory' && interaction.customId.split(':')[2] === 'status') {
 				if (interaction.inGuild()) {
-					throw new FormError('Browse your submissions in DMs.');
+					throw new FormError('You can see your submissions in your DMs with the bot.');
 				}
 
 				await interaction.deferUpdate();
@@ -258,8 +236,6 @@ export async function routeFormInteraction(interaction: FormInteraction) {
 
 		await runtime.builder.handleInteraction(interaction);
 	} catch (error) {
-		const content = explainFormError(error);
-
 		if (interaction.deferred || interaction.replied) {
 			const segments = interaction.customId.split(':');
 			const isOwnedEditor =
@@ -278,11 +254,13 @@ export async function routeFormInteraction(interaction: FormInteraction) {
 						)
 					]
 				: [];
-			await interaction.editReply(panel(content, controls));
+			await interaction.editReply(errorPanel(error, controls));
 		} else {
 			await interaction.reply({
-				content,
-				...(interaction.inGuild() ? { flags: MessageFlags.Ephemeral } : {})
+				...errorPanel(error),
+				flags: interaction.inGuild()
+					? MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral
+					: MessageFlags.IsComponentsV2
 			});
 		}
 	}

@@ -41,7 +41,7 @@ export class RateLimits {
 			.for('update');
 
 		if (!bucket) {
-			throw new FormError('The rate limit could not be checked. Please retry.');
+			throw new FormError('This request could not be checked just now. Please try again.');
 		}
 
 		const expired = timestamp - bucket.windowStartedAt.getTime() >= windowMilliseconds;

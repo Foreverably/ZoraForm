@@ -19,7 +19,7 @@ import { randomUUID } from 'node:crypto';
 import { FormService } from '../services/form-service';
 import { DiscordDelivery } from './delivery-worker';
 import { formQuestionSchema, discordSnowflakeSchema } from '../domain/schemas';
-import { FormError } from '../domain/rules';
+import { FormError, outdatedControl } from '../domain/rules';
 import type { FormConfiguration } from '../domain/types';
 import { accessPanel, blacklistSubject, readAccessChange, updateAccessList } from './access-panel';
 import { limitsPanel, updateLimit } from './limits-panel';
@@ -70,7 +70,7 @@ export class FormBuilder {
 		const guild = interaction.guild;
 
 		if (!guild) {
-			throw new FormError('Manage forms from a server.');
+			throw new FormError('Use this in a server, not in DMs.');
 		}
 
 		const identity = await this.permissions.identify(guild, interaction.user.id);
@@ -98,7 +98,9 @@ export class FormBuilder {
 		const panelOwnerId = segments[3];
 
 		if (panelOwnerId !== interaction.user.id) {
-			throw new FormError('Open your own panel with /form list.');
+			throw new FormError(
+				'This panel belongs to someone else. Run /form list to open your own panel.'
+			);
 		}
 
 		const form = await this.formService.findForm(formId);
@@ -114,7 +116,7 @@ export class FormBuilder {
 
 		if (interaction.isModalSubmit()) {
 			if (!interaction.isFromMessage()) {
-				throw new FormError('Open this editor from the form panel.');
+				throw new FormError('Open this from the form panel, then try again.');
 			}
 
 			await interaction.deferUpdate();
@@ -134,7 +136,7 @@ export class FormBuilder {
 
 		if (segments[1] === 'access') {
 			if (!interaction.isAnySelectMenu()) {
-				throw new FormError('Use the user or role selector.');
+				throw new FormError(outdatedControl);
 			}
 
 			await interaction.deferUpdate();
@@ -194,7 +196,9 @@ export class FormBuilder {
 			const question = form.data.questions[questionIndex];
 
 			if (!question || form.data.revision !== revision) {
-				throw new FormError('The question list changed. Reopen the form from /form list.');
+				throw new FormError(
+					'The questions changed while this panel was open. Open the form again from /form list.'
+				);
 			}
 
 			await interaction.deferUpdate();
@@ -357,7 +361,7 @@ export class FormBuilder {
 			]) {
 				if (!guild.roles.cache.has(roleId)) {
 					throw new FormError(
-						`Role ${roleId} no longer exists. Update Access before publishing.`
+						`A role on this form was deleted (ID ${roleId}). Remove it in Access before publishing.`
 					);
 				}
 			}
@@ -383,14 +387,14 @@ export class FormBuilder {
 	private assertRevision(configuration: FormConfiguration, revision: number) {
 		if (configuration.revision !== revision) {
 			throw new FormError(
-				'The draft changed while this panel was open. Reopen the form from /form list.'
+				'This form changed while this panel was open. Open it again from /form list.'
 			);
 		}
 	}
 
 	private questionModal(formId: string, actorId: string, revision: number, questionType: string) {
 		if (!['text', 'number', 'choice', 'attachment'].includes(questionType)) {
-			throw new FormError('Choose a supported question type.');
+			throw new FormError(outdatedControl);
 		}
 
 		const fields: ModalField[] = [{ id: 'prompt', label: 'Question wording', multiline: true }];
@@ -481,7 +485,7 @@ export class FormBuilder {
 							(index) => !Number.isInteger(index) || !configuration.questions[index]
 						)
 					) {
-						throw new FormError('List every question number exactly once.');
+						throw new FormError('List every question number exactly once, like 2,1,3.');
 					}
 
 					return {
@@ -490,7 +494,7 @@ export class FormBuilder {
 					};
 				}
 
-				throw new FormError('Unknown form setting.');
+				throw new FormError(outdatedControl);
 			}
 		);
 	}

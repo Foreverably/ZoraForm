@@ -12,7 +12,7 @@ import {
 	type StaffCapability,
 	type StaffIdentity
 } from '../domain/permissions';
-import { FormError } from '../domain/rules';
+import { FormError, outdatedControl } from '../domain/rules';
 import { FormService } from '../services/form-service';
 import { StaffPermissions } from '../services/staff-permissions';
 import { button, buttons, panelSections } from './components';
@@ -32,10 +32,6 @@ const capabilityDetails: Record<StaffCapability, { label: string; description: s
 	'submissions.decide': {
 		label: 'Decide submissions',
 		description: 'Accept or reject a submission.'
-	},
-	'submissions.reply': {
-		label: 'Reply to applicants',
-		description: 'Send an applicant a staff reply.'
 	},
 	'submissions.repair': {
 		label: 'Recover deliveries',
@@ -205,13 +201,15 @@ export class StaffPermissionsPanel {
 		const guild = interaction.guild;
 
 		if (!guild) {
-			throw new FormError('Manage staff permissions from a server.');
+			throw new FormError('Use this in a server, not in DMs.');
 		}
 
 		const [, , ownerId, action, subject] = interaction.customId.split(':');
 
 		if (ownerId !== interaction.user.id) {
-			throw new FormError('Open your own panel with /form permissions.');
+			throw new FormError(
+				'This panel belongs to someone else. Run /form permissions to open your own panel.'
+			);
 		}
 
 		const identity = await this.permissions.identify(guild, interaction.user.id);
@@ -227,7 +225,7 @@ export class StaffPermissionsPanel {
 			action === 'open' && interaction.isStringSelectMenu() ? interaction.values[0] : action;
 
 		if (!isCapability(capability)) {
-			throw new FormError('Choose a supported staff permission.');
+			throw new FormError(outdatedControl);
 		}
 
 		if (action !== 'open') {
@@ -236,7 +234,7 @@ export class StaffPermissionsPanel {
 			} else if (subject === 'user' && interaction.isUserSelectMenu()) {
 				await this.saveSelection(interaction, identity, guild.id, capability, 'user');
 			} else {
-				throw new FormError('Use the matching role or user selector.');
+				throw new FormError(outdatedControl);
 			}
 		}
 

@@ -3,15 +3,22 @@ import type { Guild } from 'discord.js';
 import { PermissionFlagsBits } from 'discord.js';
 import type { Database, Queryable } from '../../../database/database';
 import { staffGrants } from '../../../database/schema';
-import { FormError } from '../domain/rules';
-import type { StaffCapability, StaffIdentity, PermissionSubject } from '../domain/permissions';
+import { FormError, StaffPermissionError } from '../domain/rules';
+import {
+	staffCapabilityActions,
+	type StaffCapability,
+	type StaffIdentity,
+	type PermissionSubject
+} from '../domain/permissions';
+
+const askForPermission = 'Ask a server manager to give it to you with `/form permissions`.';
 
 export class StaffPermissions {
 	public constructor(private readonly database: Database) {}
 
 	public async identify(guild: Guild | null, userId: string): Promise<StaffIdentity> {
 		if (!guild) {
-			throw new FormError('Use staff controls in a server.');
+			throw new FormError('Use this in a server, not in DMs.');
 		}
 
 		const member = await guild.members.fetch({ user: userId, force: true });
@@ -65,7 +72,9 @@ export class StaffPermissions {
 		database: Queryable = this.database
 	) {
 		if (!(await this.allowed(guildId, capability, identity, database))) {
-			throw new FormError(`You do not have permission for ${capability}.`);
+			throw new StaffPermissionError(
+				`You don't have permission to ${staffCapabilityActions[capability]}. ${askForPermission}`
+			);
 		}
 	}
 
@@ -80,13 +89,15 @@ export class StaffPermissions {
 			}
 		}
 
-		throw new FormError('You do not have form management permissions.');
+		throw new StaffPermissionError(
+			`You don't have permission to manage forms. ${askForPermission}`
+		);
 	}
 
 	public assertCanConfigure(identity: StaffIdentity) {
 		if (!identity.manageServer && !identity.administrator) {
-			throw new FormError(
-				'Only members with Manage Server or Administrator can configure staff permissions.'
+			throw new StaffPermissionError(
+				'Only members with Manage Server or Administrator can change staff permissions.'
 			);
 		}
 	}

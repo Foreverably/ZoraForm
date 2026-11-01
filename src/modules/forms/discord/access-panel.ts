@@ -8,7 +8,7 @@ import {
 	UserSelectMenuBuilder,
 	type AnySelectMenuInteraction
 } from 'discord.js';
-import { FormError } from '../domain/rules';
+import { FormError, outdatedControl } from '../domain/rules';
 import type { FormConfiguration, FormRecord } from '../domain/types';
 import { button, buttons, containerPanel, safe } from './components';
 
@@ -45,7 +45,7 @@ export function blacklistSubject(category: string | undefined) {
 
 function accessCategory(value: string): AccessCategory {
 	if (!Object.hasOwn(accessCategories, value)) {
-		throw new FormError('Choose a supported access setting.');
+		throw new FormError(outdatedControl);
 	}
 
 	return value as AccessCategory;
@@ -125,13 +125,13 @@ export function readAccessChange(
 	const category = accessCategory(segments[4]!);
 
 	if (segments[5] !== 'set') {
-		throw new FormError('Use the access selectors on the current panel.');
+		throw new FormError(outdatedControl);
 	}
 
 	if (
 		category === 'blacklist' ? !interaction.isUserSelectMenu() : !interaction.isRoleSelectMenu()
 	) {
-		throw new FormError('Use the matching user or role selector.');
+		throw new FormError(outdatedControl);
 	}
 
 	const shownEntries = configuration[category].slice(0, maximumSelectedEntries);
@@ -152,7 +152,7 @@ export function updateAccessList(
 
 	if (configuration.revision !== revision) {
 		throw new FormError(
-			'This access list changed. Reopen Access before making another change.'
+			'This form changed while this panel was open. Open Access again and retry.'
 		);
 	}
 

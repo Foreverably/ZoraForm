@@ -5,11 +5,20 @@ export const staffCapabilities = [
 	'forms.archive',
 	'forms.blacklist',
 	'submissions.decide',
-	'submissions.reply',
 	'submissions.repair'
 ] as const;
 
 export type StaffCapability = (typeof staffCapabilities)[number];
+
+export const staffCapabilityActions: Record<StaffCapability, string> = {
+	'forms.create': 'create forms',
+	'forms.edit': 'edit forms',
+	'forms.publish': 'publish forms',
+	'forms.archive': 'archive forms',
+	'forms.blacklist': 'change form blacklists',
+	'submissions.decide': 'accept or reject submissions',
+	'submissions.repair': 'recover submission deliveries'
+};
 export type PermissionSubject = 'user' | 'role';
 
 export interface StaffIdentity {

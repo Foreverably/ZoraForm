@@ -86,7 +86,6 @@ export const submissions = pgTable(
 		reason: text(),
 		archived: boolean().notNull().default(false),
 		createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-		expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
 		deliveryState: text('delivery_state').notNull().default('queued')
 	},
 	(table) => [index('submissions_policy').on(table.formId, table.userId, table.createdAt)]
@@ -131,9 +130,10 @@ export const files = pgTable('files', {
 		.references(() => sessions.id),
 	name: text().notNull(),
 	size: integer().notNull(),
-	expiresAt: timestamp('expires_at', { withTimezone: true })
-		.notNull()
-		.$defaultFn(() => new Date(Date.now() + 7 * 86400000))
+	// Empty once submitted, because a replacement thread may need the file again.
+	expiresAt: timestamp('expires_at', { withTimezone: true }).$defaultFn(
+		() => new Date(Date.now() + 7 * 86400000)
+	)
 });
 
 export const staffGrants = pgTable(
@@ -160,6 +160,7 @@ export const rateLimitBuckets = pgTable('rate_limit_buckets', {
 	notified: boolean().notNull().default(false)
 });
 
+// No longer written. Kept so replies sent before this feature was removed are not lost.
 export const submissionReplies = pgTable('submission_replies', {
 	sourceInteractionId: text('source_interaction_id').unique(),
 	id: uuid()

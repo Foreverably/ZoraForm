@@ -36,13 +36,24 @@ export function reviewThreadName(user: User, formName: string) {
 	return `${user.username} - ${formName}`.slice(0, 100);
 }
 
-export function applicantCard(user: User, member: GuildMember | null, formName: string) {
-	const container = new ContainerBuilder();
-	const bannerUrl = user.bannerURL({ size: 1024 });
+export interface CardSubmission {
+	snapshot: { name: string };
+	status: 'pending' | 'accepted' | 'rejected';
+	reviewerId: string | null;
+}
 
-	if (user.accentColor) {
-		container.setAccentColor(user.accentColor);
-	}
+const cardStatus = {
+	pending: { accentColor: 0xfee75c, label: '🟡 Waiting for review' },
+	accepted: { accentColor: 0x57f287, label: '✅ Accepted' },
+	rejected: { accentColor: 0xed4245, label: '❌ Rejected' }
+} as const;
+
+export function applicantCard(user: User, member: GuildMember | null, submission: CardSubmission) {
+	const { accentColor, label } = cardStatus[submission.status];
+	const shownName = member?.displayName ?? user.displayName;
+	const globalName = user.globalName ?? user.username;
+	const container = new ContainerBuilder().setAccentColor(accentColor);
+	const bannerUrl = user.bannerURL({ size: 1024 });
 
 	if (bannerUrl) {
 		container.addMediaGalleryComponents((gallery) =>
@@ -54,7 +65,7 @@ export function applicantCard(user: User, member: GuildMember | null, formName: 
 		new SectionBuilder()
 			.addTextDisplayComponents(
 				new TextDisplayBuilder().setContent(
-					`-# New submission · ${safe(formName)}\n## ${safe(member?.displayName ?? user.displayName)}\n<@${user.id}>`
+					`-# ${safe(submission.snapshot.name)}\n## ${safe(shownName)}\n<@${user.id}> · ${safe(user.username)}\n**${label}**${submission.reviewerId ? ` by <@${submission.reviewerId}>` : ''}`
 				)
 			)
 			.setThumbnailAccessory(
@@ -63,16 +74,14 @@ export function applicantCard(user: User, member: GuildMember | null, formName: 
 	);
 
 	const details = [
-		`**Username:** ${safe(user.username)}`,
-		`**Display name:** ${safe(user.globalName ?? user.username)}`,
-		...(member?.nickname ? [`**Server nickname:** ${safe(member.nickname)}`] : []),
-		`**User ID:** \`${user.id}\``,
+		...(globalName !== shownName ? [`**Display name:** ${safe(globalName)}`] : []),
 		`**Account created:** ${discordDate(user.createdTimestamp)}`,
-		`**Member since:** ${member?.joinedTimestamp ? discordDate(member.joinedTimestamp) : member ? 'Unknown' : 'Not in this server'}`,
+		`**Joined server:** ${member?.joinedTimestamp ? discordDate(member.joinedTimestamp) : member ? 'Unknown' : 'Not in this server'}`,
 		...(member?.premiumSinceTimestamp
 			? [`**Boosting since:** ${discordDate(member.premiumSinceTimestamp)}`]
 			: []),
-		...(member ? [`**Roles:** ${roleList(member)}`] : [])
+		...(member ? [`**Roles:** ${roleList(member)}`] : []),
+		`-# User ID: \`${user.id}\``
 	];
 	container.addTextDisplayComponents(new TextDisplayBuilder().setContent(details.join('\n')));
 

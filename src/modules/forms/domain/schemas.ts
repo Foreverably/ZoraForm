@@ -16,7 +16,11 @@ export const questionReferenceSchema = validation.object({
 
 const sharedQuestionFields = {
 	id: validation.uuid(),
-	prompt: validation.string().trim().min(1).max(300),
+	prompt: validation
+		.string()
+		.trim()
+		.min(1, 'Write the question first.')
+		.max(300, 'Questions can be up to 300 characters.'),
 	required: validation.boolean().default(true),
 	references: validation.array(questionReferenceSchema).max(3).default([])
 };
@@ -26,8 +30,18 @@ export const formQuestionSchema = validation
 		validation.object({
 			...sharedQuestionFields,
 			type: validation.literal('text'),
-			min: validation.number().int().min(0).max(2000).default(1),
-			max: validation.number().int().min(1).max(2000).default(2000)
+			min: validation
+				.number('Limits must be whole numbers.')
+				.int('Limits must be whole numbers.')
+				.min(0, 'The minimum cannot be below 0.')
+				.max(2000, 'Answers can be up to 2,000 characters.')
+				.default(1),
+			max: validation
+				.number('Limits must be whole numbers.')
+				.int('Limits must be whole numbers.')
+				.min(1, 'The maximum must be at least 1.')
+				.max(2000, 'Answers can be up to 2,000 characters.')
+				.default(2000)
 		}),
 		validation.object({
 			...sharedQuestionFields,
@@ -38,7 +52,16 @@ export const formQuestionSchema = validation
 		validation.object({
 			...sharedQuestionFields,
 			type: validation.literal('choice'),
-			options: validation.array(validation.string().trim().min(1).max(100)).min(2).max(25)
+			options: validation
+				.array(
+					validation
+						.string()
+						.trim()
+						.min(1, 'Answer choices cannot be empty.')
+						.max(100, 'Answer choices can be up to 100 characters.')
+				)
+				.min(2, 'Add at least 2 answer choices.')
+				.max(25, 'Questions can have up to 25 answer choices.')
 		}),
 		validation.object({
 			...sharedQuestionFields,
@@ -54,7 +77,7 @@ export const formQuestionSchema = validation
 		) {
 			validationContext.addIssue({
 				code: 'custom',
-				message: 'Minimum must not exceed maximum.'
+				message: 'The minimum cannot be higher than the maximum.'
 			});
 		}
 		if (
@@ -63,14 +86,21 @@ export const formQuestionSchema = validation
 		) {
 			validationContext.addIssue({
 				code: 'custom',
-				message: 'Choices must be unique.'
+				message: 'Each answer choice must be different.'
 			});
 		}
 	});
 
 export const formConfigurationSchema = validation.object({
-	name: validation.string().trim().min(1).max(80),
-	description: validation.string().max(500).default(''),
+	name: validation
+		.string()
+		.trim()
+		.min(1, 'Give the form a name.')
+		.max(80, 'Form names can be up to 80 characters.'),
+	description: validation
+		.string()
+		.max(500, 'Descriptions can be up to 500 characters.')
+		.default(''),
 	reviewChannelId: discordSnowflakeSchema,
 	allowRoles: validation.array(discordSnowflakeSchema).default([]),
 	denyRoles: validation.array(discordSnowflakeSchema).default([]),
@@ -79,7 +109,9 @@ export const formConfigurationSchema = validation.object({
 	totalLimit: validation.number().int().min(0).max(100000).default(0),
 	pendingLimit: validation.number().int().min(0).max(1000).default(1),
 	cooldownSeconds: validation.number().int().min(0).max(31536000).default(0),
-	retentionDays: validation.number().int().min(1).max(365).default(30),
-	questions: validation.array(formQuestionSchema).max(25).default([]),
+	questions: validation
+		.array(formQuestionSchema)
+		.max(25, 'Forms can have up to 25 questions.')
+		.default([]),
 	revision: validation.number().int().min(1).default(1)
 });

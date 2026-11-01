@@ -4,7 +4,7 @@ import {
 	type ButtonInteraction,
 	type Guild
 } from 'discord.js';
-import { FormError } from '../domain/rules';
+import { FormError, outdatedControl } from '../domain/rules';
 import { FormService } from '../services/form-service';
 import { StaffPermissions } from '../services/staff-permissions';
 import { FormBrowsing } from './browsing';
@@ -36,7 +36,7 @@ export class SubmissionRecovery {
 				: undefined;
 
 		if (!submissionId) {
-			throw new FormError('Choose a submission to recover.');
+			throw new FormError(outdatedControl);
 		}
 
 		const submission = await this.formService.findSubmission(submissionId);

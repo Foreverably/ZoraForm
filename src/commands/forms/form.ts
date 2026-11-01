@@ -3,7 +3,7 @@ import { Command } from '@sapphire/framework';
 import { ChannelType, InteractionContextType, MessageFlags } from 'discord.js';
 import { getBotName } from '../../lib/environment';
 import { formsRuntime } from '../../modules/forms/runtime';
-import { explainFormError, managePanel } from '../../modules/forms/discord/components';
+import { errorPanel, managePanel } from '../../modules/forms/discord/components';
 import { FormError } from '../../modules/forms/domain/rules';
 
 @ApplyOptions<Command.Options>({ description: `Create and manage ${getBotName()} questionnaires.` })
@@ -61,7 +61,7 @@ export class FormCommand extends Command {
 			const guild = interaction.guild;
 
 			if (!guild) {
-				throw new FormError('Manage forms from a server.');
+				throw new FormError('Use this in a server, not in DMs.');
 			}
 
 			const identity = await runtime.permissions.identify(guild, interaction.user.id);
@@ -91,7 +91,7 @@ export class FormCommand extends Command {
 				await runtime.browsing.submissionForms(guild, identity.userId)
 			);
 		} catch (error) {
-			await interaction.editReply(explainFormError(error));
+			await interaction.editReply(errorPanel(error));
 		}
 	}
 }

@@ -1,5 +1,4 @@
 import { QuestionMedia } from '../services/question-media';
-import { getBotName } from '../../../lib/environment';
 import {
 	ChannelType,
 	PermissionFlagsBits,
@@ -14,8 +13,7 @@ import {
 	submissions,
 	files,
 	processedInputs,
-	rateLimitBuckets,
-	submissionReplies
+	rateLimitBuckets
 } from '../../../database/schema';
 import { FormService } from '../services/form-service';
 import { AttachmentTransfer } from '../services/attachment-transfer';
@@ -68,7 +66,9 @@ export class DiscordDelivery {
 		const channel = await this.client.channels.fetch(configuration.reviewChannelId);
 
 		if (!channel || channel.type !== ChannelType.GuildText || channel.guildId !== guildId) {
-			throw new FormError('Choose a standard text channel in this server for staff review.');
+			throw new FormError(
+				'Pick a regular text channel in this server as the submission channel.'
+			);
 		}
 
 		const botMember = await channel.guild.members.fetchMe();
@@ -84,7 +84,7 @@ export class DiscordDelivery {
 
 		if (!channel.permissionsFor(botMember)?.has(requiredPermissions)) {
 			throw new FormError(
-				'The bot needs view, send, thread-creation, thread-management, history and attachment permissions in the review channel.'
+				'The bot is missing permissions in the submission channel. It needs View Channel, Send Messages, Create Public Threads, Send Messages in Threads, Manage Threads, Read Message History and Attach Files.'
 			);
 		}
 
@@ -146,7 +146,7 @@ export class DiscordDelivery {
 				this.lastCleanup = Date.now();
 			}
 		} catch {
-			console.error('A delivery or retention operation failed. It will retry.');
+			console.error('A delivery or cleanup operation failed. It will retry.');
 		} finally {
 			this.running = false;
 
@@ -166,8 +166,6 @@ export class DiscordDelivery {
 				return this.deliverDecision(deliveryJob.payload.id);
 			case 'close':
 				return this.archiveReview(deliveryJob.payload.id);
-			case 'reply':
-				return this.deliverReply(deliveryJob.payload.id);
 		}
 	}
 
@@ -245,11 +243,7 @@ export class DiscordDelivery {
 		}
 	}
 
-	private async postApplicantCard(
-		channel: TextChannel,
-		submission: SubmissionRecord,
-		deliveryId: string
-	) {
+	private async applicantCardFor(channel: TextChannel, submission: SubmissionRecord) {
 		const user = await this.client.users.fetch(submission.userId, { force: true });
 		const member = await channel.guild.members
 			.fetch({ user: submission.userId, force: true })
@@ -260,6 +254,36 @@ export class DiscordDelivery {
 
 				throw error;
 			});
+
+		return { user, card: applicantCard(user, member, submission) };
+	}
+
+	// The card shows the outcome at a glance. The decision is already saved, so a failure here
+	// must not repeat the rest of the archive step.
+	private async updateApplicantCard(submission: SubmissionRecord) {
+		if (!submission.reviewMessageId) {
+			return;
+		}
+
+		try {
+			const channel = await this.client.channels.fetch(submission.snapshot.reviewChannelId);
+
+			if (channel?.type === ChannelType.GuildText) {
+				const message = await channel.messages.fetch(submission.reviewMessageId);
+				const { card } = await this.applicantCardFor(channel, submission);
+				await message.edit(card);
+			}
+		} catch {
+			console.error('An applicant card could not be updated with its decision.');
+		}
+	}
+
+	private async postApplicantCard(
+		channel: TextChannel,
+		submission: SubmissionRecord,
+		deliveryId: string
+	) {
+		const { user, card: cardContent } = await this.applicantCardFor(channel, submission);
 		let card = submission.reviewMessageId
 			? await channel.messages.fetch(submission.reviewMessageId).catch(() => null)
 			: null;
@@ -272,7 +296,7 @@ export class DiscordDelivery {
 			// Discord returns the existing message when a retry repeats this nonce shortly after.
 			// Recovery queues a new delivery, so a replacement card gets a new nonce.
 			card = await channel.send({
-				...applicantCard(user, member, submission.snapshot.name),
+				...cardContent,
 				nonce: deliveryId.replaceAll('-', '').slice(0, 25),
 				enforceNonce: true
 			});
@@ -291,11 +315,7 @@ export class DiscordDelivery {
 	private async deliverReview(submissionId: string, deliveryId: string) {
 		const submission = await this.formService.findSubmission(submissionId);
 
-		if (
-			submission.deliveryState === 'ready' ||
-			submission.status !== 'pending' ||
-			submission.expiresAt <= new Date()
-		) {
+		if (submission.deliveryState === 'ready' || submission.status !== 'pending') {
 			return;
 		}
 
@@ -306,7 +326,7 @@ export class DiscordDelivery {
 
 		if (thread.type !== ChannelType.PublicThread || thread.parentId !== channel.id) {
 			throw new FormError(
-				'The stored review destination is not a submission thread in the configured channel.'
+				"This submission's thread is not in the form's submission channel. Recover it from the Submissions panel."
 			);
 		}
 
@@ -376,8 +396,7 @@ export class DiscordDelivery {
 						[
 							buttons(
 								button(`zf:r:${submission.id}:accepted`, 'Accept'),
-								button(`zf:r:${submission.id}:rejected`, 'Reject'),
-								button(`zf:r:${submission.id}:reply`, 'Reply')
+								button(`zf:r:${submission.id}:rejected`, 'Reject')
 							)
 						]
 					),
@@ -411,77 +430,6 @@ export class DiscordDelivery {
 		}
 	}
 
-	private async deliverReply(replyId: string) {
-		const [reply] = await this.formService.database
-			.select()
-			.from(submissionReplies)
-			.where(eq(submissionReplies.id, replyId));
-
-		if (!reply || reply.deliveredAt) {
-			return;
-		}
-
-		const submission = await this.formService.findSubmission(reply.submissionId);
-
-		if (submission.deliveryState === 'purged') {
-			return;
-		}
-
-		if (submission.threadId) {
-			const thread = await this.client.channels.fetch(submission.threadId);
-
-			if (thread?.type === ChannelType.PublicThread) {
-				const wasArchived = thread.archived;
-
-				if (wasArchived) {
-					await thread.setArchived(false);
-				}
-
-				const marker = `reply-log:${reply.id}`;
-				const threadMessages = await thread.messages.fetch({ limit: 100 });
-
-				if (!threadMessages.some((message) => this.isMarked(message, marker))) {
-					await thread.send(
-						markPanel(
-							panel(`Staff reply by <@${reply.actorId}>\n${safe(reply.content)}`),
-							marker
-						)
-					);
-				}
-
-				const currentSubmission = await this.formService.findSubmission(submission.id);
-
-				if (currentSubmission.status !== 'pending') {
-					await thread.setLocked(true);
-				}
-
-				if (wasArchived || currentSubmission.status !== 'pending') {
-					await thread.setArchived(true);
-				}
-			}
-		}
-
-		const channel = await (await this.client.users.fetch(submission.userId)).createDM();
-		const marker = `reply:${reply.id}`;
-		const messages = await channel.messages.fetch({ limit: 100 });
-
-		if (!messages.some((message) => this.isMarked(message, marker))) {
-			await channel.send(
-				markPanel(
-					panel(
-						`## Staff reply: ${safe(submission.snapshot.name)}\n${safe(reply.content)}`
-					),
-					marker
-				)
-			);
-		}
-
-		await this.formService.database
-			.update(submissionReplies)
-			.set({ deliveredAt: new Date() })
-			.where(eq(submissionReplies.id, replyId));
-	}
-
 	private async archiveReview(submissionId: string) {
 		const submission = await this.formService.findSubmission(submissionId);
 
@@ -492,7 +440,9 @@ export class DiscordDelivery {
 		const thread = await this.client.channels.fetch(submission.threadId);
 
 		if (!thread || thread.type !== ChannelType.PublicThread) {
-			throw new FormError('Review thread is missing.');
+			throw new FormError(
+				'The thread for this submission no longer exists. Recover it from the Submissions panel.'
+			);
 		}
 
 		if (thread.archived) {
@@ -500,7 +450,7 @@ export class DiscordDelivery {
 		}
 		await thread.send(
 			panel(
-				`This submission was ${submission.status} by reviewer ${submission.reviewerId}.\n${safe(submission.reason ?? '')}\nThe review is complete and this thread is being archived.`
+				`${submission.status === 'accepted' ? '✅' : '❌'} ${submission.status === 'accepted' ? 'Accepted' : 'Rejected'} by <@${submission.reviewerId}>\n${safe(submission.reason ?? '')}\n-# This thread is now archived.`
 			)
 		);
 		await thread.setLocked(true);
@@ -509,6 +459,7 @@ export class DiscordDelivery {
 			.update(submissions)
 			.set({ archived: true })
 			.where(eq(submissions.id, submission.id));
+		await this.updateApplicantCard(submission);
 	}
 
 	public async repairReview(
@@ -520,7 +471,7 @@ export class DiscordDelivery {
 		const submission = await this.formService.findSubmission(submissionId);
 
 		if (submission.guildId !== guildId || submission.status !== 'pending') {
-			throw new FormError('Choose a pending submission from this server.');
+			throw new FormError('Only undecided submissions from this server can be recovered.');
 		}
 
 		await this.validateReviewChannel(guildId, submission.snapshot);
@@ -570,65 +521,6 @@ export class DiscordDelivery {
 					inArray(sessions.status, ['prompt', 'answer', 'confirm', 'paused'])
 				)
 			);
-		const expiredSubmissions = await this.formService.database
-			.select()
-			.from(submissions)
-			.where(
-				and(lte(submissions.expiresAt, new Date()), ne(submissions.deliveryState, 'purged'))
-			)
-			.limit(20);
-
-		for (const submission of expiredSubmissions) {
-			if (submission.threadId) {
-				const thread = await this.client.channels
-					.fetch(submission.threadId)
-					.catch((error) => {
-						if (
-							typeof error === 'object' &&
-							error &&
-							'code' in error &&
-							error.code === 10003
-						) {
-							return null;
-						}
-						throw error;
-					});
-
-				if (thread) {
-					await thread.delete(`${getBotName()} answer retention period ended`);
-				}
-			}
-
-			if (submission.reviewMessageId) {
-				await this.questionMedia.deleteMessage(
-					submission.snapshot.reviewChannelId,
-					submission.reviewMessageId
-				);
-			}
-
-			await this.formService.database.transaction(async (database) => {
-				await database
-					.update(submissions)
-					.set({
-						answers: [],
-						snapshot: { ...submission.snapshot, questions: [] },
-						reviewMessageId: null,
-						deliveryState: 'purged',
-						status: submission.status === 'pending' ? 'rejected' : submission.status,
-						archived: true
-					})
-					.where(eq(submissions.id, submission.id));
-				await database
-					.update(sessions)
-					.set({ answers: [], snapshot: { ...submission.snapshot, questions: [] } })
-					.where(eq(sessions.id, submission.sessionId));
-				await database.delete(jobs).where(eq(jobs.payload, { id: submission.id }));
-				await database
-					.delete(submissionReplies)
-					.where(eq(submissionReplies.submissionId, submission.id));
-			});
-		}
-
 		const expiredDrafts = await this.formService.database
 			.select()
 			.from(sessions)

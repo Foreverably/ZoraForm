@@ -94,10 +94,17 @@ test('Manage Server and Administrator have default access without grants', async
 
 test('user and role grants are independent, scoped to a server and revocable', async () => {
 	const isolatedGuild = randomUUID();
-	await permissions.configure(isolatedGuild, manager, 'submissions.reply', 'user', actorId, true);
-	assert.equal(await permissions.allowed(isolatedGuild, 'submissions.reply', ordinary), true);
+	await permissions.configure(
+		isolatedGuild,
+		manager,
+		'submissions.repair',
+		'user',
+		actorId,
+		true
+	);
+	assert.equal(await permissions.allowed(isolatedGuild, 'submissions.repair', ordinary), true);
 	assert.equal(await permissions.allowed(isolatedGuild, 'submissions.decide', ordinary), false);
-	assert.equal(await permissions.allowed(guildId, 'submissions.reply', ordinary), false);
+	assert.equal(await permissions.allowed(guildId, 'submissions.repair', ordinary), false);
 	await permissions.configure(isolatedGuild, manager, 'forms.edit', 'role', staffRoleId, true);
 	assert.equal(
 		await permissions.allowed(isolatedGuild, 'forms.edit', {
@@ -110,12 +117,12 @@ test('user and role grants are independent, scoped to a server and revocable', a
 	await permissions.configure(
 		isolatedGuild,
 		manager,
-		'submissions.reply',
+		'submissions.repair',
 		'user',
 		actorId,
 		false
 	);
-	assert.equal(await permissions.allowed(isolatedGuild, 'submissions.reply', ordinary), false);
+	assert.equal(await permissions.allowed(isolatedGuild, 'submissions.repair', ordinary), false);
 	await assert.rejects(
 		permissions.configure(isolatedGuild, ordinary, 'forms.create', 'user', actorId, true),
 		/Only members with Manage Server/
@@ -224,8 +231,7 @@ test('submission browsing is paginated and reading depends on channel access rat
 			guildId,
 			formId: form.id,
 			snapshot: form.data,
-			answers: [],
-			expiresAt: new Date(Date.now() + 86400000)
+			answers: []
 		});
 	}
 	const lastPage = await browser.submissions(context.guild, form.id, actorId, 2);
@@ -248,7 +254,7 @@ test('submission browsing is paginated and reading depends on channel access rat
 	);
 	await assert.rejects(
 		browser.submissions(context.guild, form.id, actorId),
-		/access to the submission channel/
+		/access to this form's submission channel/
 	);
 });
 
@@ -285,7 +291,7 @@ test('preview pagination exposes all questions and long choice lists without exc
 	assert.ok(page > 25);
 });
 
-test('reply permission does not allow decisions and revoked roles lose access immediately', async () => {
+test('other grants do not allow decisions and revoked roles lose access immediately', async () => {
 	const form = await fixture();
 	const applicantId = randomUUID();
 	const sessionId = randomUUID();
@@ -306,13 +312,11 @@ test('reply permission does not allow decisions and revoked roles lose access im
 			formId: form.id,
 			snapshot: form.data,
 			answers: [],
-			threadId: randomUUID(),
-			expiresAt: new Date(Date.now() + 86400000)
+			threadId: randomUUID()
 		})
 		.returning();
 	const identity = { ...ordinary, roleIds: [staffRoleId] };
-	await permissions.configure(guildId, manager, 'submissions.reply', 'role', staffRoleId, true);
-	await assert.rejects(
+	const decide = () =>
 		formService.recordDecision(
 			submission.id,
 			actorId,
@@ -320,45 +324,15 @@ test('reply permission does not allow decisions and revoked roles lose access im
 			'accepted',
 			'Yes',
 			identity
-		),
-		/do not have permission/
-	);
-	const replyInteractionId = randomUUID();
-	const replyId = await formService.replyToSubmission(
-		submission.id,
-		identity,
-		submission.threadId,
-		'Thanks for applying.',
-		replyInteractionId
-	);
-	assert.ok(replyId);
-	assert.equal(
-		await formService.replyToSubmission(
-			submission.id,
-			identity,
-			submission.threadId,
-			'Thanks for applying.',
-			replyInteractionId
-		),
-		replyId
-	);
-	assert.equal(
-		(
-			await database
-				.select()
-				.from(schema.submissionReplies)
-				.where(eq(schema.submissionReplies.id, replyId))
-		).length,
-		1
-	);
-	await permissions.configure(guildId, manager, 'submissions.reply', 'role', staffRoleId, false);
-	await assert.rejects(
-		formService.replyToSubmission(
-			submission.id,
-			identity,
-			submission.threadId,
-			'Another update'
-		),
-		/do not have permission/
-	);
+		);
+	await permissions.configure(guildId, manager, 'submissions.repair', 'role', staffRoleId, true);
+	await assert.rejects(decide(), /don't have permission/);
+	await permissions.configure(guildId, manager, 'submissions.repair', 'role', staffRoleId, false);
+	await permissions.configure(guildId, manager, 'submissions.decide', 'role', staffRoleId, true);
+	await permissions.configure(guildId, manager, 'submissions.decide', 'role', staffRoleId, false);
+	await assert.rejects(decide(), /don't have permission/);
+	await permissions.configure(guildId, manager, 'submissions.decide', 'role', staffRoleId, true);
+	await decide();
+	assert.equal((await formService.findSubmission(submission.id)).status, 'accepted');
+	await permissions.configure(guildId, manager, 'submissions.decide', 'role', staffRoleId, false);
 });

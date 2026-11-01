@@ -1,6 +1,11 @@
 import { createHash } from 'node:crypto';
 import { ZodError } from 'zod';
-import { describeNumberLimits, describeTextLimits, FormError } from '../domain/rules';
+import {
+	describeNumberLimits,
+	describeTextLimits,
+	FormError,
+	StaffPermissionError
+} from '../domain/rules';
 import {
 	ActionRowBuilder,
 	ButtonBuilder,
@@ -66,7 +71,6 @@ const buttonIcons: Record<string, string> = {
 	Reopen: '🔓',
 	Reorder: '↕️',
 	'Replace files': '📎',
-	Reply: '💬',
 	Resume: '▶️',
 	'Review channel': '📥',
 	Skip: '⏭️',
@@ -215,19 +219,19 @@ export function prompt(session: QuestionnaireSession) {
 	}
 	const question = session.snapshot.questions[session.position]!;
 	const prefix = `zf:s:${session.id}:${session.version}`;
-	let hint = 'Reply with your answer.';
+	let hint = 'Send your answer as a message.';
 	if (question.type === 'text') {
-		hint = `Reply with ${describeTextLimits(question)}.`;
+		hint = `Send your answer as a message, ${describeTextLimits(question)}.`;
 	}
 	if (question.type === 'number') {
 		const limits = describeNumberLimits(question);
-		hint = limits ? `Reply with a number ${limits}.` : 'Reply with a number.';
+		hint = limits ? `Send a number ${limits}.` : 'Send a number.';
 	}
 	if (question.type === 'choice') {
-		hint = 'Select one answer below.';
+		hint = 'Pick your answer from the menu.';
 	}
 	if (question.type === 'attachment') {
-		hint = 'Attach 1–3 files. Maximum 8 MiB each and 20 MiB total.';
+		hint = 'Attach 1–3 files, up to 8 MiB each and 20 MiB total.';
 	}
 	const rows: Row[] = [];
 	if (question.type === 'choice') {
@@ -254,7 +258,7 @@ export function prompt(session: QuestionnaireSession) {
 		)
 	);
 	return panel(
-		`-# **${safe(session.snapshot.name)}** · Question ${session.position + 1} of ${session.snapshot.questions.length}\n${questionHeading(question.prompt)}\n-# ${hint}${session.position === 0 ? `\n\n-# Progress is saved for seven days. Submitted answers and files are deleted after ${session.snapshot.retentionDays} days.` : ''}`,
+		`-# **${safe(session.snapshot.name)}** · Question ${session.position + 1} of ${session.snapshot.questions.length}\n${questionHeading(question.prompt)}\n-# ${hint}${session.position === 0 ? '\n\n-# Progress is saved for seven days.' : ''}`,
 		rows
 	);
 }
@@ -336,14 +340,21 @@ export function explainFormError(error: unknown) {
 	}
 
 	if (error instanceof ZodError) {
-		return error.issues
-			.map((issue) => `${issue.path.join('.') || 'Configuration'}: ${issue.message}`)
-			.slice(0, 3)
-			.join('\n');
+		return [...new Set(error.issues.map((issue) => issue.message))].slice(0, 3).join('\n');
 	}
 
 	console.error(
 		'A form operation failed. Applicant answers and credentials have not been logged.'
 	);
-	return 'This could not be completed right now. Your saved progress is safe. Please retry.';
+	return 'This could not be completed right now. Your saved progress is safe. Please try again.';
+}
+
+const errorAccentColor = 0xed4245;
+
+export function errorPanel(error: unknown, rows: Row[] = []) {
+	const icon = error instanceof StaffPermissionError ? '🔒' : '⚠️';
+
+	return panelSections([
+		{ accentColor: errorAccentColor, text: `${icon} ${explainFormError(error)}`, rows }
+	]);
 }

@@ -1,5 +1,5 @@
 import { ActionRowBuilder, StringSelectMenuBuilder } from 'discord.js';
-import { FormError } from '../domain/rules';
+import { FormError, outdatedControl } from '../domain/rules';
 import type { FormConfiguration, FormRecord } from '../domain/types';
 import { button, buttons, panelSections, safe } from './components';
 
@@ -52,10 +52,6 @@ const limitSettings = {
 			value === 0
 				? 'No wait between submissions'
 				: `Wait ${duration(value)} between submissions`
-	},
-	retentionDays: {
-		choices: [7, 14, 30, 60, 90, 180, 365],
-		label: (value: number) => `Delete submissions after ${plural(value, 'day')}`
 	}
 } as const;
 
@@ -86,7 +82,7 @@ export function limitsPanel(form: FormRecord, actorId: string) {
 	return panelSections([
 		{
 			accentColor: limitsAccentColor,
-			text: `## ${safe(form.data.name)} — Submission limits\n**Submissions per person:** how many times one person can ever submit this form.\n**Waiting for review:** how many of their submissions can be undecided at once.\n**Wait between submissions:** how long they wait before submitting again.\n**Delete submissions after:** when this time runs out, the bot deletes the answers, files, thread and applicant card, and staff can no longer read them. A submission still undecided by then is closed as rejected.`
+			text: `## ${safe(form.data.name)} — Submission limits\n**Submissions per person:** how many times one person can ever submit this form.\n**Waiting for review:** how many of their submissions can be undecided at once.\n**Wait between submissions:** how long they wait before submitting again.`
 		},
 		{ text: '-# Changes stay in the draft until you publish.', rows },
 		{ rows: [buttons(button(`zf:m:${form.id}:${actorId}:back`, 'Back to form'))] }
@@ -101,11 +97,13 @@ export function updateLimit(
 	const setting = segments[4]!;
 
 	if (!Object.hasOwn(limitSettings, setting)) {
-		throw new FormError('Choose a supported limit.');
+		throw new FormError(outdatedControl);
 	}
 
 	if (configuration.revision !== Number(segments[5])) {
-		throw new FormError('These limits changed. Reopen them from the form panel.');
+		throw new FormError(
+			'These limits changed while this panel was open. Open them again from the form panel.'
+		);
 	}
 
 	return { ...configuration, [setting]: Number(selectedValue) };

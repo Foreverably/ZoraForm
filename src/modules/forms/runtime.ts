@@ -45,7 +45,7 @@ export function createRuntime(client: Client, connectionString: string) {
 
 export function formsRuntime() {
 	if (!activeRuntime) {
-		throw new FormError('The forms service is starting. Please retry shortly.');
+		throw new FormError('The bot is still starting. Please try again in a moment.');
 	}
 
 	return activeRuntime;

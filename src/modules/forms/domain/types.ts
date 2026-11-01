@@ -59,7 +59,7 @@ export interface FormSubmission {
 
 export interface DeliveryJob {
 	id: string;
-	kind: 'prompt' | 'review' | 'receipt' | 'close' | 'reply';
+	kind: 'prompt' | 'review' | 'receipt' | 'close';
 	payload: {
 		id: string;
 		version?: number;

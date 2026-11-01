@@ -68,7 +68,7 @@ export class FormBrowsing {
 
 		if (!(await this.canReadChannel(form.data.reviewChannelId, member))) {
 			throw new FormError(
-				'You need access to the submission channel to browse its submissions.'
+				"You need access to this form's submission channel to see its submissions."
 			);
 		}
 	}

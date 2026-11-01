@@ -54,7 +54,9 @@ export class QuestionMedia {
 		const channel = await this.client.channels.fetch(channelId);
 
 		if (!channel || channel.type !== ChannelType.GuildText || channel.guildId !== guildId) {
-			throw new FormError('Choose a valid review channel before uploading question files.');
+			throw new FormError(
+				'Pick a regular text channel as the submission channel before uploading files.'
+			);
 		}
 
 		const botMember = await channel.guild.members.fetchMe();
@@ -67,7 +69,7 @@ export class QuestionMedia {
 
 		if (!channel.permissionsFor(botMember)?.has(requiredPermissions)) {
 			throw new FormError(
-				'The bot needs view, send, attachment and history permissions in the review channel to keep reference files there.'
+				'The bot keeps reference files in the submission channel, but it is missing permissions there. It needs View Channel, Send Messages, Attach Files and Read Message History.'
 			);
 		}
 

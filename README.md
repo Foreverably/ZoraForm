@@ -28,10 +28,9 @@ Other staff can receive individual capabilities through a user grant, a role gra
 | `forms.archive`      | Closing a form to applicants                                                    |
 | `forms.blacklist`    | Blocking or unblocking users and roles on a form                                |
 | `submissions.decide` | Accepting or rejecting a submission                                             |
-| `submissions.reply`  | Sending an applicant a staff reply                                              |
 | `submissions.repair` | Recovering failed submission delivery                                           |
 
-Only members with Manage Server or Administrator can grant or revoke capabilities. `/form permissions` opens a panel listing each capability; choose one to pick its roles and users from Discord's own selectors, and changes apply as soon as a selector closes. Grants are server-specific and checked against live membership on each action. Permission to reply does not grant permission to decide, and permission to edit does not grant permission to publish. Discord command visibility remains configurable through Discord's own integration settings; the bot enforces capability checks independently.
+Only members with Manage Server or Administrator can grant or revoke capabilities. `/form permissions` opens a panel listing each capability; choose one to pick its roles and users from Discord's own selectors, and changes apply as soon as a selector closes. Grants are server-specific and checked against live membership on each action. Permission to edit does not grant permission to publish. Discord command visibility remains configurable through Discord's own integration settings; the bot enforces capability checks independently.
 
 ## Create forms
 
@@ -49,17 +48,17 @@ Publishing fails if a reference file is no longer available. If one disappears a
 
 Use Access for allowed roles, required roles, blacklisted roles, and blocked users on one form. The panel shows each list directly in a role or user selector, pre-filled with its current entries; changes save as soon as a selector closes. Selectors show the first 25 entries and lists hold up to 100, with entries past the first 25 left in place. Blacklist changes need `forms.blacklist` and apply immediately, including to the published form; allowed and required roles stay in the draft until Publish. Denials take precedence: any blacklisted role blocks access, all required roles must be present, and at least one allowed role must be present when an allow-list is configured. An empty allow-list imposes no role restriction.
 
-The Limits panel sets, from menus, how many times one person can submit, how many of their submissions can wait for review at once, how long they wait between submissions, and when submissions are deleted (30 days by default). When that time runs out, the bot deletes the answers, files, thread, and applicant card, and an undecided submission is closed as rejected. Question, allowed-role, required-role, and policy edits stay in the draft until Publish; blacklists take effect immediately.
+The Limits panel sets, from menus, how many times one person can submit, how many of their submissions can wait for review at once, and how long they wait between submissions. Question, allowed-role, required-role, and policy edits stay in the draft until Publish; blacklists take effect immediately.
 
 The form panel shows Publish for a draft, Publish changes when edits are waiting, and Reopen for an archived form. Publishing validates the submission channel, the bot's permissions, question configuration, and role references. `/form list` opens a paginated browser where selecting a form opens its management panel, which holds every form action including Publish, Archive, and Submissions. Previews include every question and choice, with pagination for long content.
 
 ## Channel visibility and staff actions
 
-The configured channel's Discord permissions determine who can read submissions. For each submission the bot posts an applicant card in that channel, with the applicant's avatar, banner, names, ID, account age, server join date, and roles, then starts a thread from it named `username - form name`. It does not maintain an invitation list or a separate reader role list. Threads are public, meaning visible to members who can view the parent channel, so configure a staff-only parent channel in Discord when submissions should be restricted to staff.
+The configured channel's Discord permissions determine who can read submissions. For each submission the bot posts an applicant card in that channel, with the applicant's avatar, banner, names, ID, account age, server join date, roles, and a review status that updates after the decision, then starts a thread from it named `username - form name`. It does not maintain an invitation list or a separate reader role list. Threads are public, meaning visible to members who can view the parent channel, so configure a staff-only parent channel in Discord when submissions should be restricted to staff.
 
 The bot needs View Channel, Send Messages, Create Public Threads, Send Messages in Threads, Read Message History, Manage Threads, and Attach Files in the submission channel.
 
-Reading a thread does not grant permission to act on the submission. Accept and Reject require `submissions.decide`; Reply requires `submissions.reply`. Reply queues a DM to the applicant and records a copy in the submission thread without changing the decision. Final decisions queue the applicant notification and lock and archive the thread. Failed applicant DMs do not undo a saved decision or block archival. There is no Claim or Request Information workflow.
+Reading a thread does not grant permission to act on the submission. Accept and Reject require `submissions.decide`. Final decisions queue the applicant notification and lock and archive the thread. Failed applicant DMs do not undo a saved decision or block archival. There is no Claim or Request Information workflow.
 
 `/form submissions` lists the forms whose submission channel the member can read, then paginates each form's submissions; staff can also reach them from a form's management panel. Members with `submissions.repair` get a recovery menu for pending submissions, which reconciles existing threads before retrying. If no thread is found, a replacement is only created after confirming through a separate button.
 
@@ -73,11 +72,11 @@ Attachment answers store only source DM channel, message, and attachment identif
 
 Up to three files are accepted per attachment question, up to 8 MiB per file and 20 MiB across the questionnaire. The original DM upload must remain available until delivery completes. The confirmation step checks that uploads are still available; missing uploads can be corrected through Edit answer before Submit. Once the copy is in the submission thread, it no longer depends on the original DM attachment. Discord delivery failures are retried from durable jobs.
 
-## Anti-spam and retention
+## Anti-spam and storage
 
 PostgreSQL-backed rate limits are shared across workers and survive restarts. Per user, each ten-second window permits eight DM messages, fifteen component interactions, and six form commands, with a combined ceiling of twenty requests. Repeated blocked DM requests do not generate repeated warning messages. These limits are separate from per-form submission limits and cooldowns.
 
-Retention removes saved answer content, source attachment metadata, staff replies, the applicant card, and the associated submission thread. Minimal submission history remains to enforce lifetime limits. Cancellation and draft expiry clean up saved progress and attachment references while the bot runs. The bot does not delete applicants' original DM messages.
+Submissions are kept permanently: answers, threads, and applicant cards are never deleted automatically, and uploaded answer files stay in their threads. Only unfinished questionnaires are removed, when cancelled or after seven days of inactivity. The bot does not delete applicants' original DM messages.
 
 ## Database and development
 

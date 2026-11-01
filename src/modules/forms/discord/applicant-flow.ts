@@ -3,6 +3,8 @@ import {
 	ActionRowBuilder,
 	StringSelectMenuBuilder,
 	ButtonStyle,
+	ComponentType,
+	type APIContainerComponent,
 	type Client,
 	type Message,
 	type ButtonInteraction,
@@ -10,9 +12,9 @@ import {
 } from 'discord.js';
 import { FormService } from '../services/form-service';
 import { AttachmentTransfer } from '../services/attachment-transfer';
-import { FormError, SubmissionLimitError } from '../domain/rules';
+import { FormError, SubmissionLimitError, outdatedControl } from '../domain/rules';
 import type { QuestionnaireSession } from '../domain/types';
-import { panel, buttons, button, safe, summary } from './components';
+import { panel, buttons, button, questionHeading, safe, summary } from './components';
 
 const maximumListedLimits = 10;
 
@@ -39,7 +41,7 @@ export class ApplicantFlow {
 			}
 
 			throw new FormError(
-				'Membership could not be checked right now. Your progress is safe; please retry.'
+				'Your server membership could not be checked just now. Your progress is safe, so please try again.'
 			);
 		}
 	}
@@ -165,11 +167,11 @@ export class ApplicantFlow {
 		const question = session.snapshot.questions[session.position];
 
 		if (!question) {
-			throw new FormError('Resume your questionnaire to continue.');
+			throw new FormError('Press Resume on your saved form to continue.');
 		}
 
 		if (question.type === 'choice') {
-			throw new FormError('Choose an answer from the select menu on the latest question.');
+			throw new FormError('Pick your answer from the menu on the latest question.');
 		}
 
 		const memberRoleIds = await this.memberRoles(session.guildId, message.author.id);
@@ -177,7 +179,7 @@ export class ApplicantFlow {
 		await this.formService.assertEligibility(currentForm, message.author.id, memberRoleIds);
 
 		if (question.type !== 'attachment' && message.attachments.size) {
-			throw new FormError('This question expects a written answer.');
+			throw new FormError('This question needs a written answer, not a file.');
 		}
 
 		const attachments =
@@ -197,13 +199,50 @@ export class ApplicantFlow {
 				message.reference?.messageId ?? undefined
 			);
 
-			if (!answerSaved) {
+			if (answerSaved) {
+				void this.removeAnsweredControls(message, session.promptId);
+			} else {
 				await this.attachments.remove(attachments);
 			}
 		} catch (error) {
 			await this.attachments.remove(attachments);
 			throw error;
 		}
+	}
+
+	// Buttons under an answered question only lead to an out-of-date notice. This is cosmetic, so
+	// it runs on the side and must never hold up the next question.
+	private async removeAnsweredControls(message: Message, promptId: string | null) {
+		if (!promptId) {
+			return;
+		}
+
+		try {
+			const question = await message.channel.messages.fetch(promptId);
+			const containers = JSON.parse(
+				JSON.stringify(question.components)
+			) as APIContainerComponent[];
+
+			await question.edit({
+				components: containers.map((container) => ({
+					...container,
+					components: container.components.filter(
+						(part) =>
+							part.type !== ComponentType.ActionRow &&
+							part.type !== ComponentType.Separator
+					)
+				}))
+			});
+		} catch {
+			// The question stays as it is, and its old buttons explain that they are out of date.
+		}
+	}
+
+	// The next question arrives as its own message, so the old controls can simply go.
+	private async clearControlMessage(
+		interaction: ButtonInteraction | StringSelectMenuInteraction
+	) {
+		await interaction.deleteReply().catch(() => undefined);
 	}
 
 	public async handleInteraction(interaction: ButtonInteraction | StringSelectMenuInteraction) {
@@ -219,7 +258,7 @@ export class ApplicantFlow {
 				const formId = interaction.values[0];
 
 				if (!formId) {
-					throw new FormError('Choose a form.');
+					throw new FormError(outdatedControl);
 				}
 
 				const form = await this.formService.findForm(formId);
@@ -228,9 +267,7 @@ export class ApplicantFlow {
 					interaction.user.id,
 					await this.memberRoles(form.guildId, interaction.user.id)
 				);
-				await interaction.editReply(
-					panel('Your questionnaire is starting. The first question will arrive in a DM.')
-				);
+				await this.clearControlMessage(interaction);
 				return;
 			}
 
@@ -247,7 +284,7 @@ export class ApplicantFlow {
 
 		if (session.userId !== interaction.user.id || session.version !== version) {
 			throw new FormError(
-				'This control is out of date. Use the latest question or DM the bot to resume.'
+				'These buttons are out of date. Use the latest question, or send the bot a message to carry on.'
 			);
 		}
 
@@ -304,7 +341,8 @@ export class ApplicantFlow {
 			);
 			await interaction.editReply(
 				panel(
-					`Submitted successfully. Your staff review is being prepared.\nSubmission ID: ${submission.id}`
+					`✅ **${safe(session.snapshot.name)}** submitted. Staff will review it, and you will get a DM with their decision.
+-# Submission ID: \`${submission.id}\``
 				)
 			);
 			return;
@@ -330,7 +368,13 @@ export class ApplicantFlow {
 				interaction.id,
 				question.options[choiceIndex]!
 			);
-			await interaction.editReply(panel('Answer saved. The next step will arrive shortly.'));
+			await interaction.editReply(
+				panel(
+					`-# **${safe(session.snapshot.name)}** · Question ${session.position + 1} of ${session.snapshot.questions.length}
+${questionHeading(question.prompt)}
+✅ ${safe(question.options[choiceIndex]!)}`
+				)
+			);
 			return;
 		}
 
@@ -342,7 +386,7 @@ export class ApplicantFlow {
 				roles,
 				Number(segments[5])
 			);
-			await interaction.editReply(panel('Opening that question for editing.'));
+			await this.clearControlMessage(interaction);
 			return;
 		}
 
@@ -355,7 +399,7 @@ export class ApplicantFlow {
 			navigation !== 'pause' &&
 			navigation !== 'cancel'
 		) {
-			throw new FormError('Unknown questionnaire action.');
+			throw new FormError(outdatedControl);
 		}
 
 		await this.formService.navigateSession(
@@ -365,12 +409,14 @@ export class ApplicantFlow {
 			roles,
 			navigation
 		);
-		await interaction.editReply(
-			navigation === 'cancel'
-				? await this.directory(interaction.user.id)
-				: navigation === 'pause'
-					? panel('Questionnaire paused. DM the bot when you are ready to resume.')
-					: panel('Your saved question will arrive shortly.')
-		);
+		if (navigation === 'cancel') {
+			await interaction.editReply(await this.directory(interaction.user.id));
+		} else if (navigation === 'pause') {
+			await interaction.editReply(
+				panel('⏸️ Paused. Send the bot a message when you are ready to carry on.')
+			);
+		} else {
+			await this.clearControlMessage(interaction);
+		}
 	}
 }

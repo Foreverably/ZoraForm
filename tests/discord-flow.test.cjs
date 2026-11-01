@@ -65,7 +65,15 @@ function mockDiscord() {
 			},
 			send: async (payload) => {
 				const components = payload.components?.map((component) => component.toJSON()) ?? [];
-				const message = { id: id(), author: { id: 'bot' }, components, payload };
+				const message = {
+					id: id(),
+					author: { id: 'bot' },
+					components,
+					payload,
+					edit: async (edited) => {
+						message.components = edited.components;
+					}
+				};
 				messages.set(message.id, message);
 				return message;
 			}
@@ -122,6 +130,9 @@ function mockDiscord() {
 				id: messageId,
 				author: { id: 'bot' },
 				components: payload.components.map((component) => component.toJSON()),
+				edit: async (edited) => {
+					card.components = edited.components.map((component) => component.toJSON());
+				},
 				startThread: async (configuration) => {
 					operations.push('create-thread');
 					const thread = {
@@ -289,7 +300,8 @@ test('first DM opens eligible forms, then submission reaches a channel-visible r
 	);
 	const card = flow.discord.reviewMessages.get(delivered.reviewMessageId);
 	const cardContents = card.components[0].components;
-	assert.equal(card.components[0].accent_color, 0x123456);
+	assert.equal(card.components[0].accent_color, 0xfee75c);
+	assert.match(JSON.stringify(card.components), /Waiting for review/);
 	assert.equal(
 		cardContents.find((part) => part.type === 12).items[0].media.url.includes('banner'),
 		true
@@ -349,6 +361,10 @@ test('first DM opens eligible forms, then submission reaches a channel-visible r
 	assert.equal(thread.archived, true);
 	assert.equal(thread.locked, true);
 	assert.match(JSON.stringify([...(await channel.messages.fetch()).values()]), /Welcome aboard/);
+	const decidedCard = flow.discord.reviewMessages.get(delivered.reviewMessageId);
+	assert.equal(decidedCard.components[0].accent_color, 0x57f287);
+	assert.ok(JSON.stringify(decidedCard.components).includes(`Accepted** by <@${reviewerId}>`));
+	assert.doesNotMatch(JSON.stringify(decidedCard.components), /Waiting for review/);
 	await formService.archiveForm(flow.form.id, guildId, reviewerId);
 	assert.equal((await formService.findForm(flow.form.id)).archived, true);
 });
@@ -646,7 +662,7 @@ test('cancelled drafts delete attachment metadata during retention cleanup', asy
 	);
 });
 
-test('submission retention removes the submission thread and answer copies while preserving policy history', async () => {
+test('submissions are kept permanently and old ones are never cleaned up', async () => {
 	const flow = await setupFlow();
 	const confirmation = await finishAnswers(flow);
 	const submission = await formService.submitSession(
@@ -657,21 +673,123 @@ test('submission retention removes the submission thread and answer copies while
 	);
 	await flow.delivery.tick();
 	const delivered = await formService.findSubmission(submission.id);
-	assert.ok(flow.discord.channels.has(delivered.threadId));
 	await database
 		.update(schema.submissions)
-		.set({ expiresAt: new Date(0) })
+		.set({ createdAt: new Date(0) })
 		.where(eq(schema.submissions.id, submission.id));
 	await flow.delivery.cleanup();
-	const retainedRecord = await formService.findSubmission(submission.id);
-	assert.equal(retainedRecord.deliveryState, 'purged');
-	assert.equal(retainedRecord.status, 'rejected');
-	assert.deepEqual(retainedRecord.answers, []);
-	assert.equal(flow.discord.channels.has(delivered.threadId), false);
-	assert.equal(flow.discord.reviewMessages.has(delivered.reviewMessageId), false);
-	assert.equal(retainedRecord.reviewMessageId, null);
-	assert.deepEqual((await formService.findSession(confirmation.id)).answers, []);
-	await formService.startSession(flow.form.id, flow.userId, [guildId]);
+	const kept = await formService.findSubmission(submission.id);
+	assert.equal(kept.status, 'pending');
+	assert.deepEqual(kept.answers, delivered.answers);
+	assert.equal(kept.snapshot.questions.length, delivered.snapshot.questions.length);
+	assert.ok(flow.discord.channels.has(delivered.threadId));
+	assert.ok(flow.discord.reviewMessages.has(delivered.reviewMessageId));
+	const threadMessages = await flow.discord.channels.get(delivered.threadId).messages.fetch();
+	const controls = [...threadMessages.values()].at(-1);
+	assert.match(JSON.stringify(controls.components), /"label":"Accept"/);
+	assert.doesNotMatch(JSON.stringify(controls.components), /"label":"Reply"/);
+});
+
+test('submitted answer files stay available for a replacement thread', async () => {
+	const flow = await setupFlow();
+	const session = await formService.startSession(flow.form.id, flow.userId, []);
+	await database.insert(schema.files).values({
+		key: randomUUID(),
+		sessionId: session.id,
+		name: 'proof.png',
+		size: 4,
+		expiresAt: new Date(0)
+	});
+	await flow.delivery.cleanup();
+	assert.equal(
+		(await database.select().from(schema.files).where(eq(schema.files.sessionId, session.id)))
+			.length,
+		0,
+		'an unfinished draft file still expires'
+	);
+	const key = randomUUID();
+	await database.insert(schema.files).values({
+		key,
+		sessionId: session.id,
+		name: 'proof.png',
+		size: 4,
+		expiresAt: null
+	});
+	await flow.delivery.cleanup();
+	assert.equal(
+		(await database.select().from(schema.files).where(eq(schema.files.key, key))).length,
+		1
+	);
+});
+
+test('the DM stays tidy: controls are cleared, answered questions lose their buttons', async () => {
+	const flow = await setupFlow();
+	await formService.editFormDraft(flow.form.id, guildId, reviewerId, (configuration) => ({
+		...configuration,
+		questions: [
+			configuration.questions[0],
+			formQuestionSchema.parse({
+				id: randomUUID(),
+				type: 'text',
+				prompt: 'Second question?'
+			})
+		]
+	}));
+	const form = await formService.findForm(flow.form.id);
+	await formService.publishForm(form.id, guildId, reviewerId, form.data.revision);
+	const channel = await (await flow.discord.client.users.fetch(flow.userId)).createDM();
+	const controlInteraction = (customId, values = []) => {
+		const calls = { deleted: 0, edited: 0 };
+		return {
+			calls,
+			customId,
+			values,
+			user: { id: flow.userId },
+			inGuild: () => false,
+			isStringSelectMenu: () => values.length > 0,
+			deferUpdate: async () => undefined,
+			deleteReply: async () => {
+				calls.deleted++;
+			},
+			editReply: async () => {
+				calls.edited++;
+			}
+		};
+	};
+	const hasButtons = (message) =>
+		message.components[0].components.some((part) => part.type === 1);
+
+	const starting = controlInteraction('zf:directory:select', [form.id]);
+	await flow.applicant.handleInteraction(starting);
+	assert.deepEqual(starting.calls, { deleted: 1, edited: 0 });
+	await flow.delivery.tick();
+	const [firstQuestion] = [...(await channel.messages.fetch()).values()];
+	assert.ok(hasButtons(firstQuestion));
+	assert.doesNotMatch(JSON.stringify(firstQuestion.components), /deleted after|30 days/);
+
+	await flow.applicant.handleMessage({
+		author: { id: flow.userId },
+		id: flow.discord.id(),
+		channel,
+		content: 'Because I like it.',
+		attachments: new Collection(),
+		reference: null
+	});
+	await flow.delivery.tick();
+	const messages = [...(await channel.messages.fetch()).values()];
+	assert.equal(messages.length, 2);
+	assert.equal(hasButtons(messages[0]), false, 'the answered question has no buttons');
+	assert.match(JSON.stringify(messages[0].components), /### Why join/);
+	assert.ok(hasButtons(messages[1]));
+
+	const session = await formService.findActiveSession(flow.userId);
+	const pausing = controlInteraction(`zf:s:${session.id}:${session.version}:pause`);
+	await flow.applicant.handleInteraction(pausing);
+	assert.deepEqual(pausing.calls, { deleted: 0, edited: 1 });
+	const paused = await formService.findActiveSession(flow.userId);
+	const resuming = controlInteraction(`zf:s:${paused.id}:${paused.version}:resume`);
+	await flow.applicant.handleInteraction(resuming);
+	assert.deepEqual(resuming.calls, { deleted: 1, edited: 0 });
 });
 
 test('Sapphire discovers the form command, DM listener and all component handlers', async () => {
@@ -844,47 +962,6 @@ test('text, choice, number and attachment answers survive the complete questionn
 	);
 	await flow.delivery.tick();
 	assert.equal((await formService.findSubmission(submission.id)).archived, true);
-});
-
-test('a staff reply is delivered separately from deciding the submission', async () => {
-	const flow = await setupFlow();
-	const confirmation = await finishAnswers(flow);
-	const submission = await formService.submitSession(
-		confirmation.id,
-		flow.userId,
-		confirmation.version,
-		[guildId]
-	);
-	await flow.delivery.tick();
-	const delivered = await formService.findSubmission(submission.id);
-	await database
-		.insert(schema.staffGrants)
-		.values({
-			guildId,
-			capability: 'submissions.reply',
-			subjectType: 'user',
-			subjectId: reviewerId
-		})
-		.onConflictDoNothing();
-	await formService.replyToSubmission(
-		submission.id,
-		{ userId: reviewerId, roleIds: [], manageServer: false, administrator: false },
-		delivered.threadId,
-		'Your application has reached the team.'
-	);
-	await flow.delivery.tick();
-	const channel = await (await flow.discord.client.users.fetch(flow.userId)).createDM();
-	assert.match(
-		JSON.stringify([...(await channel.messages.fetch()).values()]),
-		/Your application has reached the team/
-	);
-	assert.match(
-		JSON.stringify([
-			...(await flow.discord.channels.get(delivered.threadId).messages.fetch()).values()
-		]),
-		/Your application has reached the team/
-	);
-	assert.equal((await formService.findSubmission(submission.id)).status, 'pending');
 });
 
 function managementEditor(flow) {
@@ -1397,7 +1474,7 @@ test('access lists appear directly as pre-filled selectors and keep entries they
 		editor.builder.handleInteraction(
 			editor.interaction(`${accessPrefix}:denyRoles:set:0`, 'user', [reviewerId])
 		),
-		/matching user or role/
+		/out of date/
 	);
 });
 
@@ -1446,7 +1523,7 @@ test('blacklist-only staff can open Access and block users but not change other 
 				])
 			)
 		),
-		/forms\.edit/
+		/permission to edit forms/
 	);
 	await database
 		.delete(schema.staffGrants)
@@ -1499,6 +1576,52 @@ test('the form panel only offers publishing when there is something to publish',
 	const draftPanel = JSON.stringify(componentTree(managePanel(draft, reviewerId)));
 	assert.match(draftPanel, /"label":"Publish"/);
 	assert.match(draftPanel, /"label":"Archive"/);
+});
+
+test('errors share one style, name the blocked action and hide internal names', async () => {
+	const { errorPanel } = require('../dist/modules/forms/discord/components');
+	const { StaffPermissions } = require('../dist/modules/forms/services/staff-permissions');
+	const { FormError } = require('../dist/modules/forms/domain/rules');
+	const render = (error) => componentTree(errorPanel(error))[0];
+	const permissions = new StaffPermissions(database);
+	const staff = { userId: reviewerId, roleIds: [], manageServer: false, administrator: false };
+	const denied = await permissions
+		.assertAllowed('12345678901234333', 'submissions.decide', staff)
+		.catch((error) => error);
+	const deniedPanel = render(denied);
+	assert.equal(deniedPanel.accent_color, 0xed4245);
+	assert.equal(
+		deniedPanel.components[0].content,
+		"🔒 You don't have permission to accept or reject submissions. Ask a server manager to give it to you with `/form permissions`."
+	);
+	assert.equal(
+		render(new FormError('Plain problem.')).components[0].content,
+		'⚠️ Plain problem.'
+	);
+
+	const invalid = (() => {
+		try {
+			formQuestionSchema.parse({
+				id: randomUUID(),
+				type: 'choice',
+				prompt: 'Pick one',
+				options: ['Only one']
+			});
+		} catch (error) {
+			return error;
+		}
+	})();
+	assert.equal(render(invalid).components[0].content, '⚠️ Add at least 2 answer choices.');
+
+	const original = console.error;
+	console.error = () => undefined;
+	try {
+		const unexpected = render(new Error('secret internal detail')).components[0].content;
+		assert.doesNotMatch(unexpected, /secret/);
+		assert.match(unexpected, /Please try again/);
+	} finally {
+		console.error = original;
+	}
 });
 
 test('buttons carry icons, and unknown labels stay valid without one', () => {
@@ -1559,35 +1682,31 @@ test('submission limits are chosen from menus that explain deletion', async () =
 		editor.interaction(`zf:m:${flow.form.id}:${reviewerId}:policy`)
 	);
 	assert.equal(editor.modals.length, 0);
-	assert.match(
-		JSON.stringify(componentTree(editor.message.payload)),
-		/deletes the answers, files/
-	);
+	assert.doesNotMatch(JSON.stringify(componentTree(editor.message.payload)), /[Dd]elete/);
 	assert.deepEqual(selectedLabels(), [
 		'Unlimited submissions per person',
 		'1 waiting for review at a time',
-		'Wait 90 seconds between submissions',
-		'Delete submissions after 30 days'
+		'Wait 90 seconds between submissions'
 	]);
 
-	const [totalSelect, , cooldownSelect, retentionSelect] = limitSelects();
+	const [totalSelect, , cooldownSelect] = limitSelects();
 	await editor.builder.handleInteraction(
 		editor.interaction(cooldownSelect.custom_id, 'string', ['86400'])
 	);
 	await assert.rejects(
 		editor.builder.handleInteraction(
-			editor.interaction(retentionSelect.custom_id, 'string', ['90'])
+			editor.interaction(totalSelect.custom_id, 'string', ['3'])
 		),
 		/limits changed/
 	);
-	const [, , , currentRetention] = limitSelects();
+	const [currentTotal] = limitSelects();
 	await editor.builder.handleInteraction(
-		editor.interaction(currentRetention.custom_id, 'string', ['90'])
+		editor.interaction(currentTotal.custom_id, 'string', ['3'])
 	);
 	const saved = await formService.findForm(flow.form.id);
 	assert.equal(saved.data.cooldownSeconds, 86400);
-	assert.equal(saved.data.retentionDays, 90);
-	assert.equal(saved.published.retentionDays, 30, 'limits stay in the draft until published');
+	assert.equal(saved.data.totalLimit, 3);
+	assert.equal(saved.published.totalLimit, 0, 'limits stay in the draft until published');
 	assert.equal(selectedLabels()[2], 'Wait 1 day between submissions');
 	assert.ok(totalSelect.options.length <= 25);
 	await assert.rejects(
@@ -1598,7 +1717,7 @@ test('submission limits are chosen from menus that explain deletion', async () =
 				['1']
 			)
 		),
-		/supported limit/
+		/out of date/
 	);
 });
 
@@ -1701,15 +1820,15 @@ test('staff permissions are managed from native selectors on one panel', async (
 	assert.match(JSON.stringify(componentTree(editor.message.payload)), /Choose a permission/);
 	await assert.rejects(
 		staffPanel.handle(interaction('zf:p:someone-else:back')),
-		/Open your own panel/
+		/open your own panel/
 	);
 	await assert.rejects(
 		staffPanel.handle(interaction(`${prefix}:open`, 'string', ['forms.everything'])),
-		/supported staff permission/
+		/out of date/
 	);
 	await assert.rejects(
 		staffPanel.handle(interaction(`${prefix}:submissions.decide:role`, 'user', [reviewerId])),
-		/matching role or user/
+		/out of date/
 	);
 	const notManager = interaction(`${prefix}:back`);
 	notManager.guild = {
@@ -1815,7 +1934,7 @@ test('form panels replace ID commands for submissions and delivery recovery', as
 				reviewerId,
 				repairId.split(':')
 			),
-			/submissions\.repair/
+			/permission to recover submission deliveries/
 		);
 	} finally {
 		await runtime.connection.close();

@@ -9,7 +9,6 @@ import {
 	sessions,
 	submissions,
 	userLocks,
-	submissionReplies,
 	auditEvents,
 	jobs,
 	processedInputs,
@@ -20,7 +19,8 @@ import {
 	assertFormAccess,
 	FormError,
 	SubmissionLimitError,
-	validateQuestionAnswer
+	validateQuestionAnswer,
+	outdatedControl
 } from '../domain/rules';
 import { formConfigurationSchema } from '../domain/schemas';
 import type {
@@ -58,7 +58,7 @@ export class FormService {
 	public async findForm(id: string, database: Queryable = this.database) {
 		const [form] = await database.select().from(forms).where(eq(forms.id, id));
 		if (!form) {
-			throw new FormError('Form not found.');
+			throw new FormError('That form no longer exists.');
 		}
 		return form;
 	}
@@ -113,7 +113,7 @@ export class FormService {
 				.where(and(eq(forms.id, id), eq(forms.guildId, guildId)))
 				.for('update');
 			if (!form) {
-				throw new FormError('Form not found in this server.');
+				throw new FormError('That form no longer exists in this server.');
 			}
 			const data = formConfigurationSchema.parse(change(form.data));
 			data.revision = form.data.revision + 1;
@@ -178,7 +178,9 @@ export class FormService {
 				.where(and(eq(forms.id, id), eq(forms.guildId, guildId)))
 				.for('update');
 			if (!form || form.data.revision !== revision) {
-				throw new FormError('The draft changed. Reopen the panel and publish again.');
+				throw new FormError(
+					'This form changed while this panel was open. Open it again and retry publishing.'
+				);
 			}
 			if (!form.data.questions.length) {
 				throw new FormError('Add at least one question before publishing.');
@@ -198,7 +200,7 @@ export class FormService {
 		await this.database.transaction(async (database) => {
 			const form = await this.findForm(id, database);
 			if (form.guildId !== guildId) {
-				throw new FormError('Wrong server.');
+				throw new FormError('This form belongs to another server.');
 			}
 			await database.update(forms).set({ archived: true }).where(eq(forms.id, id));
 			await this.recordAuditEvent(database, guildId, actorId, 'form.archive', id);
@@ -221,12 +223,12 @@ export class FormService {
 				.for('update');
 
 			if (!form) {
-				throw new FormError('Form not found in this server.');
+				throw new FormError('That form no longer exists in this server.');
 			}
 
 			if (expectedRevision !== undefined && form.data.revision !== expectedRevision) {
 				throw new FormError(
-					'This access list changed. Reopen Access before making another change.'
+					'This form changed while this panel was open. Open Access again and retry.'
 				);
 			}
 
@@ -343,7 +345,9 @@ export class FormService {
 	public async findSession(id: string, database: Queryable = this.database) {
 		const [session] = await database.select().from(sessions).where(eq(sessions.id, id));
 		if (!session) {
-			throw new FormError('Session not found.');
+			throw new FormError(
+				'That questionnaire no longer exists. Send the bot a message to start again.'
+			);
 		}
 		return session;
 	}
@@ -390,7 +394,9 @@ export class FormService {
 					)
 				);
 			if (await this.findActiveSession(userId, database)) {
-				throw new FormError('You already have a questionnaire. Resume or cancel it first.');
+				throw new FormError(
+					'You already have a form in progress. Resume or cancel it first.'
+				);
 			}
 			const form = await this.findForm(formId, database);
 			await this.assertEligibility(form, userId, memberRoleIds, database);
@@ -472,7 +478,7 @@ export class FormService {
 			}
 			const question = session.snapshot.questions[session.position];
 			if (!question) {
-				throw new FormError('No question is active.');
+				throw new FormError('No question is waiting for an answer right now.');
 			}
 			const answer = validateQuestionAnswer(question, answerText, attachments);
 			const answers = [...session.answers];
@@ -552,7 +558,7 @@ export class FormService {
 				!activeStates.includes(session.status) ||
 				session.expiresAt.getTime() <= Date.now()
 			) {
-				throw new FormError('This session control is out of date.');
+				throw new FormError(outdatedControl);
 			}
 			if (action !== 'cancel') {
 				await this.assertEligibility(
@@ -634,7 +640,7 @@ export class FormService {
 				!Number.isInteger(questionIndex) ||
 				!session.snapshot.questions[questionIndex]
 			) {
-				throw new FormError('Choose an answer from the confirmation summary.');
+				throw new FormError('Choose the answer to edit from your summary.');
 			}
 
 			await database
@@ -658,7 +664,7 @@ export class FormService {
 			.from(submissions)
 			.where(eq(submissions.id, id));
 		if (!submission) {
-			throw new FormError('Submission not found.');
+			throw new FormError('That submission no longer exists.');
 		}
 		return submission;
 	}
@@ -695,7 +701,6 @@ export class FormService {
 			}
 			const form = await this.findForm(session.formId, database);
 			const submissionId = randomUUID();
-			const expires = new Date(Date.now() + session.snapshot.retentionDays * 86400000);
 			const [submission] = await database
 				.insert(submissions)
 				.values({
@@ -708,8 +713,7 @@ export class FormService {
 						...session.snapshot,
 						reviewChannelId: form.published!.reviewChannelId
 					},
-					answers: session.answers,
-					expiresAt: expires
+					answers: session.answers
 				})
 				.returning();
 			await database
@@ -719,7 +723,7 @@ export class FormService {
 					version: session.version + 1
 				})
 				.where(eq(sessions.id, id));
-			await database.update(files).set({ expiresAt: expires }).where(eq(files.sessionId, id));
+			await database.update(files).set({ expiresAt: null }).where(eq(files.sessionId, id));
 			await this.enqueueDelivery(database, 'review', submissionId);
 			await this.recordAuditEvent(
 				database,
@@ -752,10 +756,10 @@ export class FormService {
 				.where(eq(submissions.id, id))
 				.for('update');
 			if (!session || session.threadId !== threadId) {
-				throw new FormError('This review control does not belong to this thread.');
+				throw new FormError('These buttons belong to a different submission thread.');
 			}
 			if (identity.userId !== reviewerId) {
-				throw new FormError('The staff identity does not match the reviewer.');
+				throw new FormError('This action was started by a different staff member.');
 			}
 
 			await new StaffPermissions(this.database).assertAllowed(
@@ -765,7 +769,7 @@ export class FormService {
 				database
 			);
 			if (session.status !== 'pending') {
-				throw new FormError(`This submission is already ${session.status}.`);
+				throw new FormError(`This submission was already ${session.status}.`);
 			}
 			await database
 				.update(submissions)
@@ -784,82 +788,6 @@ export class FormService {
 			);
 			await this.enqueueDelivery(database, 'receipt', id);
 			await this.enqueueDelivery(database, 'close', id);
-		});
-	}
-
-	public async replyToSubmission(
-		submissionId: string,
-		identity: StaffIdentity,
-		threadId: string,
-		content: string,
-		sourceInteractionId?: string
-	) {
-		const replyText = content.trim();
-
-		if (!replyText || replyText.length > 1000) {
-			throw new FormError('Write a reply containing 1–1,000 characters.');
-		}
-
-		return this.database.transaction(async (database) => {
-			const [submission] = await database
-				.select()
-				.from(submissions)
-				.where(eq(submissions.id, submissionId))
-				.for('update');
-
-			if (
-				!submission ||
-				submission.threadId !== threadId ||
-				submission.deliveryState === 'purged' ||
-				submission.expiresAt <= new Date()
-			) {
-				throw new FormError(
-					'This reply does not belong to an available submission thread.'
-				);
-			}
-
-			await new StaffPermissions(this.database).assertAllowed(
-				submission.guildId,
-				'submissions.reply',
-				identity,
-				database
-			);
-
-			if (sourceInteractionId) {
-				const [existing] = await database
-					.select()
-					.from(submissionReplies)
-					.where(eq(submissionReplies.sourceInteractionId, sourceInteractionId));
-
-				if (existing) {
-					if (
-						existing.submissionId !== submissionId ||
-						existing.actorId !== identity.userId
-					) {
-						throw new FormError('This reply belongs to another staff action.');
-					}
-
-					return existing.id;
-				}
-			}
-
-			const replyId = randomUUID();
-			await database.insert(submissionReplies).values({
-				id: replyId,
-				sourceInteractionId: sourceInteractionId ?? null,
-				submissionId,
-				actorId: identity.userId,
-				content: replyText
-			});
-			await this.enqueueDelivery(database, 'reply', replyId);
-			await this.recordAuditEvent(
-				database,
-				submission.guildId,
-				identity.userId,
-				'submission.reply',
-				submissionId
-			);
-			return replyId;
 		});
 	}
 

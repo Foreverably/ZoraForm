@@ -212,7 +212,7 @@ test('number questions have no limits by default and old stored defaults count a
 				min: 9,
 				max: 2
 			}),
-		/Minimum must not exceed maximum/
+		/minimum cannot be higher/
 	);
 });
 test('denials beat allow-lists, required roles and membership are enforced', async () => {
@@ -311,11 +311,11 @@ test('review decisions validate reviewer and thread; final state cannot be overw
 		.where(eq(schema.submissions.id, submission.id));
 	await assert.rejects(
 		formService.recordDecision(submission.id, reviewer, 'wrong-thread', 'accepted', 'ok'),
-		/does not belong/
+		/different submission thread/
 	);
 	await assert.rejects(
 		formService.recordDecision(submission.id, 'other', event('500'), 'accepted', 'ok'),
-		/do not have permission/
+		/don't have permission to accept or reject submissions/
 	);
 	await formService.recordDecision(submission.id, reviewer, event('500'), 'accepted', 'Welcome');
 	await assert.rejects(

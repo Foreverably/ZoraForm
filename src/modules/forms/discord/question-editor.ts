@@ -11,7 +11,13 @@ import {
 	type ModalSubmitInteraction
 } from 'discord.js';
 import type { FormQuestion, FormRecord, QuestionReference } from '../domain/types';
-import { describeNumberLimits, describeTextLimits, FormError, numberLimits } from '../domain/rules';
+import {
+	describeNumberLimits,
+	describeTextLimits,
+	FormError,
+	numberLimits,
+	outdatedControl
+} from '../domain/rules';
 import { FormService } from '../services/form-service';
 import { QuestionMedia } from '../services/question-media';
 import { button, buttons, panelSections, questionHeading, safe } from './components';
@@ -104,7 +110,9 @@ export class QuestionEditor {
 		const question = form.data.questions[questionIndex];
 
 		if (!Number.isInteger(questionIndex) || !question || form.data.revision !== revision) {
-			throw new FormError('This question changed. Reopen it from the form panel.');
+			throw new FormError(
+				'This question changed while this panel was open. Open it again from the form panel.'
+			);
 		}
 
 		if (
@@ -116,7 +124,7 @@ export class QuestionEditor {
 		}
 
 		if (interaction.isModalSubmit() && !interaction.isFromMessage()) {
-			throw new FormError('Open the question editor from its form panel.');
+			throw new FormError('Open this question from the form panel, then try again.');
 		}
 
 		await interaction.deferUpdate();
@@ -136,7 +144,7 @@ export class QuestionEditor {
 				(configuration) => {
 					if (configuration.revision !== revision) {
 						throw new FormError(
-							'This question changed. Reopen it from the form panel.'
+							'This question changed while this panel was open. Open it again from the form panel.'
 						);
 					}
 
@@ -144,7 +152,7 @@ export class QuestionEditor {
 					const current = questions[questionIndex]!;
 					const value = (field: string) => {
 						if (!interaction.isModalSubmit()) {
-							throw new FormError('Save this setting through its editor.');
+							throw new FormError(outdatedControl);
 						}
 
 						return interaction.fields.getTextInputValue(field).trim();
@@ -159,7 +167,7 @@ export class QuestionEditor {
 							break;
 						case 'limits':
 							if (current.type !== 'text' && current.type !== 'number')
-								throw new FormError('This question has no numeric limits.');
+								throw new FormError(outdatedControl);
 							if (current.type === 'text') {
 								questions[questionIndex] = {
 									...current,
@@ -175,8 +183,7 @@ export class QuestionEditor {
 							}
 							break;
 						case 'choices':
-							if (current.type !== 'choice')
-								throw new FormError('Only choice questions have choices.');
+							if (current.type !== 'choice') throw new FormError(outdatedControl);
 							questions[questionIndex] = {
 								...current,
 								options: value('choices')
@@ -186,17 +193,14 @@ export class QuestionEditor {
 							};
 							break;
 						case 'upload':
-							if (!newReferences.length)
-								throw new FormError(
-									'Upload reference files through the file picker.'
-								);
+							if (!newReferences.length) throw new FormError(outdatedControl);
 							questions[questionIndex] = { ...current, references: newReferences };
 							break;
 						case 'clear':
 							questions[questionIndex] = { ...current, references: [] };
 							break;
 						default:
-							throw new FormError('Unknown question setting.');
+							throw new FormError(outdatedControl);
 					}
 
 					return { ...configuration, questions };
@@ -309,6 +313,6 @@ export class QuestionEditor {
 			);
 		}
 
-		throw new FormError('This setting is unavailable for this question type.');
+		throw new FormError(outdatedControl);
 	}
 }

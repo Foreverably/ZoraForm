@@ -2,7 +2,7 @@ import { RateLimitError } from '../../modules/forms/services/rate-limits';
 import { Listener, Events } from '@sapphire/framework';
 import type { Message } from 'discord.js';
 import { formsRuntime } from '../../modules/forms/runtime';
-import { explainFormError } from '../../modules/forms/discord/components';
+import { errorPanel } from '../../modules/forms/discord/components';
 
 export class DirectMessageListener extends Listener<typeof Events.MessageCreate> {
 	public override async run(message: Message) {
@@ -25,7 +25,7 @@ export class DirectMessageListener extends Listener<typeof Events.MessageCreate>
 			if (error instanceof RateLimitError && !error.shouldNotify) {
 				return;
 			}
-			await message.channel.send(explainFormError(error)).catch(() => {
+			await message.channel.send(errorPanel(error)).catch(() => {
 				this.container.logger.warn(
 					'Could not send a questionnaire response. Saved progress is unaffected.'
 				);
