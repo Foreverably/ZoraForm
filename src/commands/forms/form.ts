@@ -2,11 +2,11 @@ import { ApplyOptions } from '@sapphire/decorators';
 import { Command } from '@sapphire/framework';
 import { ChannelType, InteractionContextType, MessageFlags, PermissionFlagsBits } from 'discord.js';
 import { and, eq, desc } from 'drizzle-orm';
-import { formsRuntime, explainFormError } from '../modules/forms/runtime';
-import { requireFormAdmin } from '../modules/forms/builder';
-import { managePanel, panel, safe } from '../modules/forms/views';
-import { submissions } from '../database/schema';
-import { FormError } from '../modules/forms/model';
+import { formsRuntime, explainFormError } from '../../modules/forms/runtime';
+import { requireFormAdmin } from '../../modules/forms/builder';
+import { managePanel, panel, safe } from '../../modules/forms/views';
+import { submissions } from '../../database/schema';
+import { FormError } from '../../modules/forms/model';
 
 @ApplyOptions<Command.Options>({ description: 'Create and manage ZoraForms questionnaires.' })
 export class FormCommand extends Command {

@@ -413,6 +413,21 @@ test('Sapphire discovers the form command, DM listener and all component handler
 		await Promise.all([...client.stores.values()].map((store) => store.loadAll()));
 		const formCommand = client.stores.get('commands').get('form');
 		assert.ok(formCommand);
+		assert.equal(formCommand.location.full, resolve('dist/commands/forms/form.js'));
+		assert.equal(
+			client.stores.get('commands').get('ping').location.full,
+			resolve('dist/commands/general/ping.js')
+		);
+		assert.equal(
+			client.stores.get('listeners').get('messageCreate').location.full,
+			resolve('dist/listeners/forms/messageCreate.js')
+		);
+		for (const handler of client.stores.get('interaction-handlers').values()) {
+			assert.equal(
+				require('node:path').dirname(handler.location.full),
+				resolve('dist/interaction-handlers/forms')
+			);
+		}
 		assert.ok(client.stores.get('listeners').has('messageCreate'));
 		assert.equal(client.stores.get('interaction-handlers').size, 3);
 		let commandPayload;

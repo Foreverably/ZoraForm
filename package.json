@@ -31,7 +31,7 @@
   "scripts": {
     "sapphire": "sapphire",
     "generate": "sapphire generate",
-    "build": "tsc",
+    "build": "npm run clean && tsc",
     "watch": "tsc -w",
     "start": "node dist/index.js",
     "dev": "npm run build && npm run start",
@@ -42,7 +42,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
-    "test": "npm run build && node --test tests/*.test.cjs"
+    "test": "npm run build && node --test tests/*.test.cjs",
+    "clean": "node scripts/clean-build.cjs"
   },
   "private": true,
   "description": "ZoraForms Discord bot built with Sapphire and discord.js.",
