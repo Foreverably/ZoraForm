@@ -65,7 +65,7 @@ Reading a thread does not grant permission to act on the submission. Accept and 
 
 ## Applicant DMs and attachment transfer
 
-A first DM opens a paginated menu of eligible forms, labeled by server. The greeting is never saved as an answer. One unfinished questionnaire is allowed per user across all servers, with saved progress for seven days of inactivity.
+A first DM opens a paginated menu of eligible forms, labeled by server. Forms the applicant can use but has reached a limit on are listed with the reason, such as a submission waiting for review or when a cooldown ends. Forms hidden by roles or blacklists are never mentioned. The greeting is never saved as an answer. One unfinished questionnaire is allowed per user across all servers, with saved progress for seven days of inactivity.
 
 Answers are saved before advancing. Back, Skip, Pause, Resume, confirmed Cancel, and a final paginated answer summary support navigation and correction. My submissions provides complete paginated status history. Roles, blacklists, and submission policies are rechecked during progress and at submission.
 

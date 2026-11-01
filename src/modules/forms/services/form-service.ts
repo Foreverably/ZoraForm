@@ -16,7 +16,12 @@ import {
 	files,
 	retiredQuestionFiles
 } from '../../../database/schema';
-import { assertFormAccess, FormError, validateQuestionAnswer } from '../domain/rules';
+import {
+	assertFormAccess,
+	FormError,
+	SubmissionLimitError,
+	validateQuestionAnswer
+} from '../domain/rules';
 import { formConfigurationSchema } from '../domain/schemas';
 import type {
 	AttachmentReference,
@@ -296,17 +301,27 @@ export class FormService {
 			.from(submissions)
 			.where(and(eq(submissions.formId, form.id), eq(submissions.userId, userId)))
 			.orderBy(desc(submissions.createdAt));
+		if (rules.totalLimit > 0 && previous.length >= rules.totalLimit) {
+			throw new SubmissionLimitError('You have reached the submission limit for this form.');
+		}
+
 		if (
-			(rules.totalLimit > 0 && previous.length >= rules.totalLimit) ||
-			(rules.pendingLimit > 0 &&
-				previous.filter((submission) => submission.status === 'pending').length >=
-					rules.pendingLimit) ||
-			(rules.cooldownSeconds > 0 &&
-				previous[0] &&
-				previous[0].created.getTime() > Date.now() - rules.cooldownSeconds * 1000)
+			rules.pendingLimit > 0 &&
+			previous.filter((submission) => submission.status === 'pending').length >=
+				rules.pendingLimit
 		) {
-			throw new FormError(
-				'Your submission limit or cooldown for this form has been reached.'
+			throw new SubmissionLimitError(
+				'Your earlier submission is still waiting for staff review.'
+			);
+		}
+
+		const nextSubmissionAt = previous[0]
+			? previous[0].created.getTime() + rules.cooldownSeconds * 1000
+			: 0;
+
+		if (rules.cooldownSeconds > 0 && nextSubmissionAt > Date.now()) {
+			throw new SubmissionLimitError(
+				`You can submit this form again <t:${Math.ceil(nextSubmissionAt / 1000)}:R>.`
 			);
 		}
 	}

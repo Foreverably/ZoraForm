@@ -353,6 +353,61 @@ test('first DM opens eligible forms, then submission reaches a channel-visible r
 	assert.equal((await formService.findForm(flow.form.id)).archived, true);
 });
 
+test('the DM menu explains reached limits without revealing restricted forms', async () => {
+	const flow = await setupFlow();
+	const formName = `Limit explained ${randomUUID()}`;
+	const menuText = async () =>
+		JSON.stringify(componentTree(await flow.applicant.directory(flow.userId)));
+	const setPublishedRules = async (rules) => {
+		const { data, published } = await formService.findForm(flow.form.id);
+		await database
+			.update(schema.forms)
+			.set({
+				data: { ...data, name: formName, ...rules },
+				published: { ...published, name: formName, ...rules }
+			})
+			.where(eq(schema.forms.id, flow.form.id));
+	};
+	await setPublishedRules({});
+	assert.ok((await menuText()).includes(flow.form.id), 'the form can be chosen at first');
+
+	const confirmation = await finishAnswers(flow);
+	const submission = await formService.submitSession(
+		confirmation.id,
+		flow.userId,
+		confirmation.version,
+		[guildId]
+	);
+	await flow.delivery.tick();
+	let menu = await menuText();
+	assert.ok(!menu.includes(flow.form.id), 'a limited form cannot be chosen');
+	assert.ok(menu.includes(formName));
+	assert.match(menu, /Not available right now/);
+	assert.match(menu, /Test community/);
+	assert.match(menu, /still waiting for staff review/);
+	await assert.rejects(
+		formService.startSession(flow.form.id, flow.userId, [guildId]),
+		/still waiting for staff review/
+	);
+
+	const { threadId } = await formService.findSubmission(submission.id);
+	await formService.recordDecision(submission.id, reviewerId, threadId, 'rejected', 'Not yet');
+	assert.ok((await menuText()).includes(flow.form.id), 'a decision releases the pending limit');
+
+	await setPublishedRules({ cooldownSeconds: 3600 });
+	menu = await menuText();
+	assert.ok(!menu.includes(flow.form.id));
+	assert.match(menu, /You can submit this form again <t:\d+:R>/);
+
+	await setPublishedRules({ cooldownSeconds: 0, totalLimit: 1 });
+	assert.match(await menuText(), /reached the submission limit/);
+
+	await setPublishedRules({ blacklist: [flow.userId] });
+	menu = await menuText();
+	assert.ok(!menu.includes(formName), 'a blacklisted person does not learn the form exists');
+	assert.doesNotMatch(menu, /Not available right now/);
+});
+
 test('a retried prompt recognises its hidden marker and sends no second question', async () => {
 	const flow = await setupFlow();
 	await formService.startSession(flow.form.id, flow.userId, [guildId]);

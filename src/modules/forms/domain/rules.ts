@@ -2,6 +2,9 @@ import type { FormRecord, FormQuestion, AttachmentReference, QuestionAnswer } fr
 
 export class FormError extends Error {}
 
+// The applicant can use this form but has reached one of its limits, so the reason can be shown.
+export class SubmissionLimitError extends FormError {}
+
 export function assertFormAccess(
 	form: FormRecord,
 	userId: string,

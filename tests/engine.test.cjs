@@ -293,7 +293,7 @@ test('double submit produces one immutable submission and one review job', async
 	assert.equal(await formService.findActiveSession(fixtureData.user), null);
 	await assert.rejects(
 		formService.startSession(fixtureData.form.id, fixtureData.user, []),
-		/limit or cooldown/
+		/still waiting for staff review/
 	);
 });
 test('review decisions validate reviewer and thread; final state cannot be overwritten', async () => {
@@ -364,7 +364,7 @@ test('once-ever policy still applies after a rejection', async () => {
 		.where(eq(schema.submissions.id, submission.id));
 	await assert.rejects(
 		formService.startSession(fixtureData.form.id, fixtureData.user, []),
-		/limit or cooldown/
+		/reached the submission limit/
 	);
 });
 

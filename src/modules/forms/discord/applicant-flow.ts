@@ -10,9 +10,11 @@ import {
 } from 'discord.js';
 import { FormService } from '../services/form-service';
 import { AttachmentTransfer } from '../services/attachment-transfer';
-import { FormError } from '../domain/rules';
+import { FormError, SubmissionLimitError } from '../domain/rules';
 import type { QuestionnaireSession } from '../domain/types';
 import { panel, buttons, button, safe, summary } from './components';
+
+const maximumListedLimits = 10;
 
 export class ApplicantFlow {
 	public constructor(
@@ -44,6 +46,7 @@ export class ApplicantFlow {
 
 	public async directory(userId: string, requestedPage = 0) {
 		const availableForms = [];
+		const limitedForms: string[] = [];
 		const guildRoles = new Map<string, Awaited<ReturnType<ApplicantFlow['memberRoles']>>>();
 
 		for (const form of await this.formService.listForms()) {
@@ -63,7 +66,13 @@ export class ApplicantFlow {
 				);
 				availableForms.push(form);
 			} catch (error) {
-				if (!(error instanceof FormError)) {
+				if (error instanceof SubmissionLimitError) {
+					const guildName =
+						this.client.guilds.cache.get(form.guildId)?.name ?? 'Community';
+					limitedForms.push(
+						`**${safe(form.published!.name)}** · ${safe(guildName)}\n-# ${error.message}`
+					);
+				} else if (!(error instanceof FormError)) {
 					throw error;
 				}
 			}
@@ -111,8 +120,13 @@ export class ApplicantFlow {
 			)
 		);
 
+		const hiddenLimits = limitedForms.length - maximumListedLimits;
+		const limits = limitedForms.length
+			? `\n\n### Not available right now\n${limitedForms.slice(0, maximumListedLimits).join('\n')}${hiddenLimits > 0 ? `\n-# And ${hiddenLimits} more.` : ''}`
+			: '';
+
 		return panel(
-			`## ${safe(getBotName())}\n${pageForms.length ? 'Choose a form to begin. Each answer is saved automatically.' : 'There are no forms available to you right now. Try Refresh later.'}${pageCount > 1 ? `\n\n-# Page ${page + 1} of ${pageCount}` : ''}`,
+			`## ${safe(getBotName())}\n${pageForms.length ? 'Choose a form to begin. Each answer is saved automatically.' : 'There are no forms available to you right now. Try Refresh later.'}${limits}${pageCount > 1 ? `\n\n-# Page ${page + 1} of ${pageCount}` : ''}`,
 			controls
 		);
 	}
