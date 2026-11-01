@@ -1,3 +1,4 @@
+import { downloadDiscordFile } from './discord-file-transfer';
 import { randomUUID } from 'node:crypto';
 import { extname } from 'node:path';
 import type { Client, Message } from 'discord.js';
@@ -109,44 +110,10 @@ export class AttachmentTransfer {
 	public async buffer(reference: AttachmentReference) {
 		const { attachment, expectedSize } = await this.originalAttachment(reference);
 
-		const url = new URL(attachment.url);
-
-		if (
-			url.protocol !== 'https:' ||
-			!['cdn.discordapp.com', 'media.discordapp.net'].includes(url.hostname)
-		) {
-			throw new FormError('Unsupported attachment source.');
-		}
-
-		const response = await fetch(url, {
-			signal: AbortSignal.timeout(30000),
-			redirect: 'error'
-		});
-
-		if (!response.ok || !response.body) {
-			throw new FormError('The attachment could not be transferred. Delivery will retry.');
-		}
-
-		const chunks: Uint8Array[] = [];
-		let size = 0;
-
-		for await (const chunk of response.body) {
-			size += chunk.length;
-
-			if (size > 8 * 1024 * 1024) {
-				throw new FormError('The attachment exceeds 8 MiB.');
-			}
-
-			chunks.push(chunk);
-		}
-
-		if (size !== expectedSize) {
-			throw new FormError(
-				'The original attachment changed. Ask the applicant to attach it again.'
-			);
-		}
-
-		return { attachment: Buffer.concat(chunks), name: reference.name };
+		return {
+			attachment: await downloadDiscordFile(attachment.url, expectedSize),
+			name: reference.name
+		};
 	}
 
 	public async remove(references: AttachmentReference[]) {
