@@ -35,6 +35,7 @@ export interface QuestionnaireSession {
 	snapshot: FormConfiguration;
 	answers: QuestionAnswer[];
 	position: number;
+	reviewPage: number | null;
 	status: 'prompt' | 'answer' | 'confirm' | 'paused' | 'cancelled' | 'expired' | 'submitted';
 	version: number;
 	promptId: string | null;

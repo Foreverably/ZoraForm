@@ -512,7 +512,10 @@ export class FormService {
 				.update(sessions)
 				.set({
 					answers,
-					position: session.position + 1,
+					position:
+						session.reviewPage === null
+							? session.position + 1
+							: session.snapshot.questions.length,
 					status: 'prompt',
 					version: session.version + 1,
 					promptId: null,
@@ -548,7 +551,7 @@ export class FormService {
 		userId: string,
 		version: number,
 		memberRoleIds: readonly string[] | null,
-		action: 'resume' | 'back' | 'skip' | 'pause' | 'cancel'
+		action: 'resume' | 'back' | 'skip' | 'pause' | 'cancel' | 'review'
 	) {
 		await this.withUserLock(userId, async (database) => {
 			const session = await this.findSession(id, database);
@@ -568,6 +571,7 @@ export class FormService {
 					database
 				);
 			}
+			const questionCount = session.snapshot.questions.length;
 			let position = session.position;
 			let status: QuestionnaireSession['status'] = 'prompt';
 			const answers = [...session.answers];
@@ -588,7 +592,13 @@ export class FormService {
 					throw new FormError('This question cannot be skipped.');
 				}
 				answers[position] = null;
-				position++;
+				position = session.reviewPage === null ? position + 1 : questionCount;
+			}
+			if (action === 'review') {
+				if (session.reviewPage === null) {
+					throw new FormError(outdatedControl);
+				}
+				position = questionCount;
 			}
 			await database
 				.update(sessions)
@@ -647,6 +657,7 @@ export class FormService {
 				.update(sessions)
 				.set({
 					position: questionIndex,
+					reviewPage: questionIndex,
 					status: 'prompt',
 					version: version + 1,
 					promptId: null,

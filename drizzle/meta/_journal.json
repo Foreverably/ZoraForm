@@ -43,6 +43,13 @@
       "when": 1793544935504,
       "tag": "0005_keep_submissions_permanently",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1793546679960,
+      "tag": "0006_session_review_page",
+      "breakpoints": true
     }
   ]
 }

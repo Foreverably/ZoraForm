@@ -70,7 +70,7 @@ Answers are saved before advancing. Back, Skip, Pause, Resume, confirmed Cancel,
 
 Attachment answers store only source DM channel, message, and attachment identifiers plus basic metadata in PostgreSQL. Files are not saved in a local bot directory or as database binary data. On delivery, the bot force-fetches the original message to refresh the attachment URL, buffers the file in memory, uploads it to the submission thread, and releases the buffer.
 
-Up to three files are accepted per attachment question, up to 8 MiB per file and 20 MiB across the questionnaire. The original DM upload must remain available until delivery completes. The confirmation step checks that uploads are still available; missing uploads can be corrected through Edit answer before Submit. Once the copy is in the submission thread, it no longer depends on the original DM attachment. Discord delivery failures are retried from durable jobs.
+Up to three files are accepted per attachment question, up to 8 MiB per file and 20 MiB across the questionnaire. The original DM upload must remain available until delivery completes. The confirmation step checks that uploads are still available; missing uploads can be corrected through Edit answer before Submit. Edit answer changes only that question, then returns to the same page of the summary. Once the copy is in the submission thread, it no longer depends on the original DM attachment. Discord delivery failures are retried from durable jobs.
 
 ## Anti-spam and storage
 

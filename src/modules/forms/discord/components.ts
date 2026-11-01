@@ -41,6 +41,7 @@ const buttonIcons: Record<string, string> = {
 	'Back to form': '⬅️',
 	'Back to forms': '⬅️',
 	'Back to submissions': '⬅️',
+	'Back to summary': '⬅️',
 	Cancel: '✖️',
 	'Create replacement thread': '🧵',
 	Details: '📝',
@@ -215,7 +216,7 @@ export function summary(session: QuestionnaireSession, requestedPage = 0, reques
 
 export function prompt(session: QuestionnaireSession) {
 	if (session.position >= session.snapshot.questions.length) {
-		return summary(session);
+		return summary(session, session.reviewPage ?? 0);
 	}
 	const question = session.snapshot.questions[session.position]!;
 	const prefix = `zf:s:${session.id}:${session.version}`;
@@ -249,16 +250,33 @@ export function prompt(session: QuestionnaireSession) {
 			)
 		);
 	}
+	const isEditing = session.reviewPage !== null;
+
 	rows.push(
-		buttons(
-			...(session.position > 0 ? [button(`${prefix}:back`, 'Back')] : []),
-			...(question.required ? [] : [button(`${prefix}:skip`, 'Skip')]),
-			button(`${prefix}:pause`, 'Pause'),
-			button(`${prefix}:cancel`, 'Cancel', ButtonStyle.Danger)
-		)
+		isEditing
+			? buttons(
+					button(`${prefix}:review`, 'Back to summary'),
+					...(question.required ? [] : [button(`${prefix}:skip`, 'Skip')])
+				)
+			: buttons(
+					...(session.position > 0 ? [button(`${prefix}:back`, 'Back')] : []),
+					...(question.required ? [] : [button(`${prefix}:skip`, 'Skip')]),
+					button(`${prefix}:pause`, 'Pause'),
+					button(`${prefix}:cancel`, 'Cancel', ButtonStyle.Danger)
+				)
 	);
+
+	const currentAnswer = displayAnswer(session.answers[session.position]).replace(/\s+/g, ' ');
+	const footer = isEditing
+		? `\n-# Current answer: ${currentAnswer.length > 200 ? `${currentAnswer.slice(0, 200)}…` : currentAnswer}`
+		: session.position === 0
+			? '\n\n-# Progress is saved for seven days.'
+			: '';
+
 	return panel(
-		`-# **${safe(session.snapshot.name)}** · Question ${session.position + 1} of ${session.snapshot.questions.length}\n${questionHeading(question.prompt)}\n-# ${hint}${session.position === 0 ? '\n\n-# Progress is saved for seven days.' : ''}`,
+		`-# **${safe(session.snapshot.name)}** · ${isEditing ? 'Editing question' : 'Question'} ${session.position + 1} of ${session.snapshot.questions.length}
+${questionHeading(question.prompt)}
+-# ${hint}${footer}`,
 		rows
 	);
 }
@@ -343,6 +361,7 @@ export function explainFormError(error: unknown) {
 		return [...new Set(error.issues.map((issue) => issue.message))].slice(0, 3).join('\n');
 	}
 
+	// Only the error's type is logged, so answers and credentials stay out of the logs.
 	console.error(
 		`A form operation failed (${error instanceof Error ? error.name : 'unknown error'}).`
 	);

@@ -48,6 +48,8 @@ export const sessions = pgTable(
 		snapshot: jsonb().$type<FormConfiguration>().notNull(),
 		answers: jsonb().$type<QuestionAnswer[]>().notNull().default([]),
 		position: integer().notNull().default(0),
+		// The summary page to return to after editing an answer from the summary.
+		reviewPage: integer('review_page'),
 		status: text().$type<QuestionnaireSession['status']>().notNull().default('prompt'),
 		version: integer().notNull().default(0),
 		promptId: text('prompt_id'),

@@ -722,6 +722,100 @@ test('submitted answer files stay available for a replacement thread', async () 
 	);
 });
 
+test('editing from the summary changes one answer and returns to that summary page', async () => {
+	const flow = await setupFlow();
+	await formService.editFormDraft(flow.form.id, guildId, reviewerId, (configuration) => ({
+		...configuration,
+		questions: [
+			configuration.questions[0],
+			formQuestionSchema.parse({
+				id: randomUUID(),
+				type: 'text',
+				prompt: 'Second question?',
+				required: false
+			}),
+			formQuestionSchema.parse({ id: randomUUID(), type: 'text', prompt: 'Third question?' })
+		]
+	}));
+	const form = await formService.findForm(flow.form.id);
+	await formService.publishForm(form.id, guildId, reviewerId, form.data.revision);
+	const channel = await (await flow.discord.client.users.fetch(flow.userId)).createDM();
+	const answer = async (content) => {
+		await flow.applicant.handleMessage({
+			author: { id: flow.userId },
+			id: flow.discord.id(),
+			channel,
+			content,
+			attachments: new Collection(),
+			reference: null
+		});
+		await flow.delivery.tick();
+	};
+	const press = async (action) => {
+		const session = await formService.findActiveSession(flow.userId);
+		await flow.applicant.handleInteraction({
+			customId: `zf:s:${session.id}:${session.version}:${action}`,
+			user: { id: flow.userId },
+			inGuild: () => false,
+			isStringSelectMenu: () => false,
+			deferUpdate: async () => undefined,
+			deleteReply: async () => undefined,
+			editReply: async () => undefined
+		});
+		await flow.delivery.tick();
+	};
+	const lastMessage = async () =>
+		JSON.stringify([...(await channel.messages.fetch()).values()].at(-1).components);
+
+	await formService.startSession(form.id, flow.userId, [guildId]);
+	await flow.delivery.tick();
+	await answer('First answer');
+	await answer('Second answer');
+	await answer('Third answer');
+	assert.equal((await formService.findActiveSession(flow.userId)).status, 'confirm');
+	assert.match(await lastMessage(), /Review answer 1 of 3/);
+
+	await press('edit:1');
+	let editing = await lastMessage();
+	assert.match(editing, /Editing question 2 of 3/);
+	assert.match(editing, /Current answer: Second answer/);
+	assert.match(editing, /"label":"Back to summary"/);
+	assert.doesNotMatch(editing, /"label":"Cancel"|"label":"Back"/);
+
+	await answer('Changed answer');
+	let session = await formService.findActiveSession(flow.userId);
+	assert.equal(
+		session.status,
+		'confirm',
+		'editing returns to the summary, not the next question'
+	);
+	assert.deepEqual(session.answers, ['First answer', 'Changed answer', 'Third answer']);
+	assert.match(await lastMessage(), /Review answer 2 of 3/);
+	assert.doesNotMatch(await lastMessage(), /Third question/);
+
+	await press('edit:1');
+	await press('review');
+	session = await formService.findActiveSession(flow.userId);
+	assert.equal(session.status, 'confirm');
+	assert.deepEqual(session.answers, ['First answer', 'Changed answer', 'Third answer']);
+	assert.match(await lastMessage(), /Review answer 2 of 3/);
+
+	await press('edit:1');
+	await press('skip');
+	session = await formService.findActiveSession(flow.userId);
+	assert.equal(session.status, 'confirm');
+	assert.deepEqual(session.answers, ['First answer', null, 'Third answer']);
+
+	await press('edit:0');
+	editing = await lastMessage();
+	assert.doesNotMatch(editing, /"label":"Skip"/, 'a required question still cannot be skipped');
+	await answer('New first answer');
+	session = await formService.findActiveSession(flow.userId);
+	assert.equal(session.status, 'confirm');
+	assert.deepEqual(session.answers, ['New first answer', null, 'Third answer']);
+	assert.match(await lastMessage(), /Review answer 1 of 3/);
+});
+
 test('the DM stays tidy: controls are cleared, answered questions lose their buttons', async () => {
 	const flow = await setupFlow();
 	await formService.editFormDraft(flow.form.id, guildId, reviewerId, (configuration) => ({

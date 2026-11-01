@@ -396,6 +396,7 @@ ${questionHeading(question.prompt)}
 			navigation !== 'resume' &&
 			navigation !== 'back' &&
 			navigation !== 'skip' &&
+			navigation !== 'review' &&
 			navigation !== 'pause' &&
 			navigation !== 'cancel'
 		) {
