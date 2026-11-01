@@ -5,23 +5,24 @@ import { join } from 'node:path';
 import * as schema from './schema';
 import { rootDir } from '../lib/constants';
 
-export function postgres(connectionString: string) {
-	const pool = new Pool({
+export function createPostgresConnection(connectionString: string) {
+	const connectionPool = new Pool({
 		connectionString,
 		max: 5,
 		connectionTimeoutMillis: 10000
 	});
-	pool.on('error', () => console.error('PostgreSQL pool connection failed.'));
-	const db = drizzle(pool, { schema });
+
+	connectionPool.on('error', () => console.error('PostgreSQL pool connection failed.'));
+
+	const database = drizzle(connectionPool, { schema });
+
 	return {
-		db,
-		migrate: () => migrate(db, { migrationsFolder: join(rootDir, 'drizzle') }),
-		close: () => pool.end()
+		database,
+		applyMigrations: () => migrate(database, { migrationsFolder: join(rootDir, 'drizzle') }),
+		close: () => connectionPool.end()
 	};
 }
 
-export type Database = ReturnType<typeof postgres>['db'];
-
+export type Database = ReturnType<typeof createPostgresConnection>['database'];
 export type Transaction = Parameters<Parameters<Database['transaction']>[0]>[0];
-
 export type Queryable = Database | Transaction;

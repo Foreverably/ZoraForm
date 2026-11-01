@@ -352,7 +352,7 @@ export class FormEngine {
 						.where(eq(processedInputs.id, inputId))
 				).length
 			) {
-				return;
+				return false;
 			}
 			const session = await this.assertCurrentSession(
 				database,
@@ -376,6 +376,21 @@ export class FormEngine {
 			const answer = validateQuestionAnswer(question, answerText, attachments);
 			const answers = [...session.answers];
 			answers[session.position] = answer;
+			const totalAttachmentBytes = answers.reduce<number>(
+				(total, savedAnswer) =>
+					total +
+					(Array.isArray(savedAnswer)
+						? savedAnswer.reduce((sum, attachment) => sum + attachment.size, 0)
+						: 0),
+				0
+			);
+
+			if (totalAttachmentBytes > 20 * 1024 * 1024) {
+				throw new FormError(
+					'Attachments across this questionnaire must total no more than 20 MiB.'
+				);
+			}
+
 			for (const attachment of attachments) {
 				const [stored] = await database
 					.select()
@@ -397,7 +412,27 @@ export class FormEngine {
 					expiresAt: draftExpiry()
 				})
 				.where(eq(sessions.id, id));
+
+			await database
+				.update(files)
+				.set({ expiresAt: draftExpiry() })
+				.where(eq(files.sessionId, id));
+
+			const previousAnswer = session.answers[session.position];
+
+			if (Array.isArray(previousAnswer) && previousAnswer.length) {
+				await database
+					.update(files)
+					.set({ expiresAt: new Date() })
+					.where(
+						inArray(
+							files.key,
+							previousAnswer.map((attachment) => attachment.key)
+						)
+					);
+			}
 			await this.enqueueDelivery(database, 'prompt', id, session.version + 1);
+			return true;
 		});
 	}
 
@@ -456,24 +491,75 @@ export class FormEngine {
 					answers,
 					version: session.version + 1,
 					promptId: null,
-					expiresAt: draftExpiry()
+					expiresAt: action === 'cancel' ? new Date() : draftExpiry()
 				})
 				.where(eq(sessions.id, id));
+			await database
+				.update(files)
+				.set({ expiresAt: status === 'cancelled' ? new Date() : draftExpiry() })
+				.where(eq(files.sessionId, id));
+
+			if (status === 'cancelled') {
+				await database
+					.update(files)
+					.set({ expiresAt: new Date() })
+					.where(eq(files.sessionId, id));
+			}
+
 			if (status === 'prompt') {
 				await this.enqueueDelivery(database, 'prompt', id, session.version + 1);
 			}
 		});
 	}
 
+	public async editAnswerPosition(
+		sessionId: string,
+		userId: string,
+		version: number,
+		memberRoleIds: readonly string[] | null,
+		questionIndex: number
+	) {
+		await this.withUserLock(userId, async (database) => {
+			const session = await this.assertCurrentSession(
+				database,
+				sessionId,
+				userId,
+				version,
+				memberRoleIds
+			);
+
+			if (
+				session.status !== 'confirm' ||
+				!Number.isInteger(questionIndex) ||
+				!session.snapshot.questions[questionIndex]
+			) {
+				throw new FormError('Choose an answer from the confirmation summary.');
+			}
+
+			await database
+				.update(sessions)
+				.set({
+					position: questionIndex,
+					status: 'prompt',
+					version: version + 1,
+					promptId: null,
+					expiresAt: draftExpiry()
+				})
+				.where(eq(sessions.id, sessionId));
+
+			await this.enqueueDelivery(database, 'prompt', sessionId, version + 1);
+		});
+	}
+
 	public async findSubmission(id: string) {
-		const [session] = await this.database
+		const [submission] = await this.database
 			.select()
 			.from(submissions)
 			.where(eq(submissions.id, id));
-		if (!session) {
+		if (!submission) {
 			throw new FormError('Submission not found.');
 		}
-		return session;
+		return submission;
 	}
 
 	public async submitSession(

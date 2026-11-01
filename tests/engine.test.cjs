@@ -12,7 +12,7 @@ const {
 	validateQuestionAnswer,
 	formQuestionSchema
 } = require('../dist/modules/forms/model');
-const { postgres } = require('../dist/database/database');
+const { createPostgresConnection } = require('../dist/database/database');
 let engine, database, close;
 let testOffset = BigInt(Date.now()) * 100000n;
 const event = (id) => String(testOffset + BigInt(id));
@@ -29,10 +29,10 @@ before(async () => {
 			/_test$/,
 			'Integration tests require a dedicated database ending in _test'
 		);
-		const database = postgres(url.toString());
-		await database.migrate();
-		database = database.database;
-		close = database.close;
+		const connection = createPostgresConnection(url.toString());
+		await connection.applyMigrations();
+		database = connection.database;
+		close = connection.close;
 	} else {
 		const client = new PGlite();
 		database = drizzle(client, { schema });
@@ -251,25 +251,19 @@ test('review decisions validate reviewer and thread; final state cannot be overw
 	);
 	await database
 		.update(schema.submissions)
-		.set({ threadId: '12345678901234573' })
+		.set({ threadId: event('500') })
 		.where(eq(schema.submissions.id, submission.id));
 	await assert.rejects(
 		engine.recordDecision(submission.id, reviewer, 'wrong-thread', 'accepted', 'ok'),
 		/does not belong/
 	);
 	await assert.rejects(
-		engine.recordDecision(submission.id, 'other', '12345678901234573', 'accepted', 'ok'),
+		engine.recordDecision(submission.id, 'other', event('500'), 'accepted', 'ok'),
 		/not an authorized/
 	);
-	await engine.recordDecision(
-		submission.id,
-		reviewer,
-		'12345678901234573',
-		'accepted',
-		'Welcome'
-	);
+	await engine.recordDecision(submission.id, reviewer, event('500'), 'accepted', 'Welcome');
 	await assert.rejects(
-		engine.recordDecision(submission.id, reviewer, '12345678901234573', 'rejected', 'changed'),
+		engine.recordDecision(submission.id, reviewer, event('500'), 'rejected', 'changed'),
 		/already accepted/
 	);
 	assert.equal((await engine.findSubmission(submission.id)).reason, 'Welcome');
@@ -315,5 +309,49 @@ test('once-ever policy still applies after a rejection', async () => {
 	await assert.rejects(
 		engine.startSession(fixtureData.form.id, fixtureData.user, []),
 		/limit or cooldown/
+	);
+});
+
+test('simultaneous starts create one conversation across workers', async () => {
+	const fixtureData = await fixture();
+	const outcomes = await Promise.allSettled([
+		engine.startSession(fixtureData.form.id, fixtureData.user, []),
+		new FormEngine(database).startSession(fixtureData.form.id, fixtureData.user, [])
+	]);
+	assert.equal(outcomes.filter((outcome) => outcome.status === 'fulfilled').length, 1);
+	assert.equal(outcomes.filter((outcome) => outcome.status === 'rejected').length, 1);
+});
+
+test('simultaneous submissions and competing decisions have one durable result', async () => {
+	const fixtureData = await fixture();
+	const session = await completed(fixtureData);
+	const competingEngine = new FormEngine(database);
+	const [first, duplicate] = await Promise.all([
+		engine.submitSession(session.id, fixtureData.user, session.version, []),
+		competingEngine.submitSession(session.id, fixtureData.user, session.version, [])
+	]);
+	assert.equal(first.id, duplicate.id);
+	await database
+		.update(schema.submissions)
+		.set({ threadId: event('500') })
+		.where(eq(schema.submissions.id, first.id));
+	const decisions = await Promise.allSettled([
+		engine.recordDecision(first.id, reviewer, event('500'), 'accepted', 'First'),
+		competingEngine.recordDecision(first.id, reviewer, event('500'), 'rejected', 'Second')
+	]);
+	assert.equal(decisions.filter((outcome) => outcome.status === 'fulfilled').length, 1);
+});
+
+test('confirmation can reopen a selected answer without mutating a submitted snapshot', async () => {
+	const fixtureData = await fixture();
+	const session = await completed(fixtureData);
+	await engine.editAnswerPosition(session.id, fixtureData.user, session.version, [], 0);
+	const editing = await engine.findSession(session.id);
+	assert.equal(editing.position, 0);
+	assert.equal(editing.status, 'prompt');
+	assert.equal(editing.answers[0], 'Because I enjoy helping.');
+	await assert.rejects(
+		engine.editAnswerPosition(session.id, fixtureData.user, session.version, [], 0),
+		/out of date/
 	);
 });
