@@ -1,10 +1,16 @@
 {
-	"extends": ["@sapphire/ts-config", "@sapphire/ts-config/extra-strict", "@sapphire/ts-config/decorators"],
+	"extends": [
+		"@sapphire/ts-config",
+		"@sapphire/ts-config/extra-strict",
+		"@sapphire/ts-config/decorators"
+	],
 	"compilerOptions": {
-		"rootDir": "src",
+		"rootDir": ".",
 		"outDir": "dist",
-		"tsBuildInfoFile": "dist/.tsbuildinfo",
-		"skipLibCheck": true
+		"tsBuildInfoFile": "dist/.typecheck.tsbuildinfo",
+		"skipLibCheck": true,
+		"noEmit": true,
+		"types": ["node"]
 	},
-	"include": ["src"]
+	"include": ["src", "drizzle.config.ts"]
 }
