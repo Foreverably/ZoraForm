@@ -7,7 +7,7 @@ A SapphireJS and Discord.js bot for creating multiple forms, answering them thro
 Requires Node.js 22.12 or newer, npm, PostgreSQL, and a Discord application installed in your server with the `bot` and `applications.commands` scopes.
 
 1. Run `npm ci`.
-2. Copy `.env.example` to `.env` and set `DISCORD_TOKEN` and `DATABASE_URL`.
+2. Copy `.env.example` to `.env` and set `BotName`, `DISCORD_TOKEN`, and `DATABASE_URL`. `BotName` controls the displayed name in messages, command descriptions, and logs (1–50 characters).
 3. Make sure PostgreSQL is running and that `DATABASE_URL` points to it.
 4. Run `npm run build` and `npm start`. Startup applies the committed Drizzle migrations before connecting to Discord.
 5. Use `/ping` to check the connection after Discord registers the commands.

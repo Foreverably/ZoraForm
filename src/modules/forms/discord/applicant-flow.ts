@@ -1,3 +1,4 @@
+import { getBotName } from '../../../lib/environment';
 import {
 	ActionRowBuilder,
 	StringSelectMenuBuilder,
@@ -104,7 +105,7 @@ export class ApplicantFlow {
 		);
 
 		return panel(
-			`## ZoraForms\n${pageForms.length ? 'Choose a form to begin. Each answer is saved automatically.' : 'There are no forms available to you right now. Try Refresh later.'}\nPage ${page + 1} of ${pageCount}`,
+			`## ${safe(getBotName())}\n${pageForms.length ? 'Choose a form to begin. Each answer is saved automatically.' : 'There are no forms available to you right now. Try Refresh later.'}\nPage ${page + 1} of ${pageCount}`,
 			controls
 		);
 	}
@@ -186,7 +187,7 @@ export class ApplicantFlow {
 
 	public async handleInteraction(interaction: ButtonInteraction | StringSelectMenuInteraction) {
 		if (interaction.inGuild()) {
-			throw new FormError('Use the questionnaire controls in your DMs with ZoraForms.');
+			throw new FormError(`Use the questionnaire controls in your DMs with ${getBotName()}.`);
 		}
 
 		const segments = interaction.customId.split(':');

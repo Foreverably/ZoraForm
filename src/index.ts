@@ -1,5 +1,5 @@
 import '@sapphire/plugin-logger/register';
-import { initializeEnvironment } from './lib/environment';
+import { initializeEnvironment, getBotName } from './lib/environment';
 
 import { LogLevel, SapphireClient } from '@sapphire/framework';
 import { GatewayIntentBits, Partials } from 'discord.js';
@@ -33,15 +33,16 @@ async function main() {
 	const token = process.env.DISCORD_TOKEN?.trim();
 	const databaseUrl = process.env.DATABASE_URL?.trim();
 
-	if (!token || !databaseUrl) {
+	if (!token || !databaseUrl || !process.env.BotName?.trim()) {
 		client.logger.error(
-			'Set DISCORD_TOKEN and DATABASE_URL in the root .env file before starting ZoraForms.'
+			'Set BotName, DISCORD_TOKEN and DATABASE_URL in the root .env file before starting the bot.'
 		);
 		process.exitCode = 1;
 		return;
 	}
 
 	try {
+		getBotName();
 		runtime = createRuntime(client, databaseUrl);
 		await runtime.connection.applyMigrations();
 		await client.login(token);

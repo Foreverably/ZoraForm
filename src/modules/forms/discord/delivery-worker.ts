@@ -1,3 +1,4 @@
+import { getBotName } from '../../../lib/environment';
 import { ChannelType, PermissionFlagsBits, type Client, type TextChannel } from 'discord.js';
 import { and, eq, lte, inArray, ne } from 'drizzle-orm';
 import { jobs, sessions, submissions, files, processedInputs } from '../../../database/schema';
@@ -546,7 +547,7 @@ export class DiscordDelivery {
 					});
 
 				if (thread) {
-					await thread.delete('ZoraForms answer retention period ended');
+					await thread.delete(`${getBotName()} answer retention period ended`);
 				}
 			}
 

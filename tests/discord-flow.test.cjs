@@ -1,3 +1,5 @@
+process.env.BotName = 'Test Forms';
+
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
@@ -448,6 +450,7 @@ test('Sapphire discovers the form command, DM listener and all component handler
 			}
 		});
 		assert.equal(commandPayload.name, 'form');
+		assert.match(commandPayload.description, /Test Forms/);
 		assert.ok(commandPayload.options.some((option) => option.name === 'create'));
 		assert.ok(commandPayload.options.some((option) => option.name === 'archive'));
 	} finally {

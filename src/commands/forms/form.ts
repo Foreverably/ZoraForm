@@ -1,3 +1,4 @@
+import { getBotName } from '../../lib/environment';
 import { ApplyOptions } from '@sapphire/decorators';
 import { Command } from '@sapphire/framework';
 import { ChannelType, InteractionContextType, MessageFlags, PermissionFlagsBits } from 'discord.js';
@@ -9,7 +10,7 @@ import { managePanel, panel, safe } from '../../modules/forms/discord/components
 import { submissions } from '../../database/schema';
 import { FormError } from '../../modules/forms/domain/rules';
 
-@ApplyOptions<Command.Options>({ description: 'Create and manage ZoraForms questionnaires.' })
+@ApplyOptions<Command.Options>({ description: `Create and manage ${getBotName()} questionnaires.` })
 export class FormCommand extends Command {
 	public override registerApplicationCommands(registry: Command.Registry) {
 		registry.registerChatInputCommand((command) =>

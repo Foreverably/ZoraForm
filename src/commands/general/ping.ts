@@ -1,8 +1,9 @@
+import { getBotName } from '../../lib/environment';
 import { ApplyOptions } from '@sapphire/decorators';
 import { Command } from '@sapphire/framework';
 import { ApplicationIntegrationType, InteractionContextType } from 'discord.js';
 @ApplyOptions<Command.Options>({
-	description: 'Check whether ZoraForms is online.'
+	description: `Check whether ${getBotName()} is online.`
 })
 export class PingCommand extends Command {
 	public override registerApplicationCommands(registry: Command.Registry) {
