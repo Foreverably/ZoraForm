@@ -35,8 +35,19 @@ export function createPostgresConnection(connectionString: string) {
 				await client.query(`
 					CREATE TABLE IF NOT EXISTS public.__drizzle_migrations (
 						id serial PRIMARY KEY,
-							hash text NOT NULL UNIQUE,
+						hash text NOT NULL,
 						created_at bigint
+					)
+				`);
+				await client.query(`
+					DELETE FROM public.__drizzle_migrations
+					WHERE id IN (
+						SELECT id
+						FROM (
+							SELECT id, row_number() OVER (PARTITION BY hash ORDER BY id) AS duplicate_number
+							FROM public.__drizzle_migrations
+						) duplicates
+						WHERE duplicate_number > 1
 					)
 				`);
 				await client.query('COMMIT');
@@ -136,7 +147,11 @@ export function createPostgresConnection(connectionString: string) {
 					(await migrationSignatures[migration.tag]?.())
 				) {
 					await client.query(
-						'INSERT INTO public.__drizzle_migrations (hash, created_at) VALUES ($1, $2) ON CONFLICT (hash) DO NOTHING',
+						`INSERT INTO public.__drizzle_migrations (hash, created_at)
+						 SELECT $1, $2
+						 WHERE NOT EXISTS (
+							SELECT 1 FROM public.__drizzle_migrations WHERE hash = $1
+						 )`,
 						[hash, migration.when]
 					);
 				}
