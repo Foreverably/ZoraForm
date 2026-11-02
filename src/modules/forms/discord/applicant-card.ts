@@ -50,8 +50,7 @@ const cardStatus = {
 
 export function applicantCard(user: User, member: GuildMember | null, submission: CardSubmission) {
 	const { accentColor, label } = cardStatus[submission.status];
-	const shownName = member?.displayName ?? user.displayName;
-	const globalName = user.globalName ?? user.username;
+	void member;
 	const container = new ContainerBuilder().setAccentColor(accentColor);
 	const bannerUrl = user.bannerURL({ size: 1024 });
 
