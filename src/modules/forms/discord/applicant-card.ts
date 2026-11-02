@@ -14,7 +14,7 @@ const maximumListedRoles = 30;
 function discordDate(timestamp: number) {
 	const seconds = Math.floor(timestamp / 1000);
 
-	return `<t:${seconds}:D> · <t:${seconds}:R>`;
+	return `<t:${seconds}:D> - <t:${seconds}:R>`;
 }
 
 function roleList(member: GuildMember) {
@@ -43,22 +43,15 @@ export interface CardSubmission {
 }
 
 const cardStatus = {
-	pending: { accentColor: 0xfee75c, label: '🟡 Waiting for review' },
-	accepted: { accentColor: 0x57f287, label: '✅ Accepted' },
-	rejected: { accentColor: 0xed4245, label: '❌ Rejected' }
+	pending: { accentColor: 0xfee75c, label: '(Waiting for review)' },
+	accepted: { accentColor: 0x57f287, label: '(Accepted)' },
+	rejected: { accentColor: 0xed4245, label: '(Rejected)' }
 } as const;
 
 export function applicantCard(user: User, member: GuildMember | null, submission: CardSubmission) {
 	const { accentColor, label } = cardStatus[submission.status];
 	void member;
 	const container = new ContainerBuilder().setAccentColor(accentColor);
-	const bannerUrl = user.bannerURL({ size: 1024 });
-
-	if (bannerUrl) {
-		container.addMediaGalleryComponents((gallery) =>
-			gallery.addItems((item) => item.setURL(bannerUrl))
-		);
-	}
 
 	const details = [
 		`-# **Account created:** ${discordDate(user.createdTimestamp)}`,
