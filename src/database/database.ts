@@ -45,6 +45,104 @@ export function createPostgresConnection(connectionString: string) {
 				throw error;
 			}
 
+			const migrationSignatures: Record<string, () => Promise<boolean>> = {
+				'0000_breezy_lady_mastermind': async () =>
+					(
+						await client.query(`
+							SELECT COUNT(*)::int AS count
+							FROM information_schema.tables
+							WHERE table_schema = 'public'
+								AND table_name IN (
+									'audit_events', 'files', 'forms', 'guild_blacklist', 'jobs',
+									'processed_inputs', 'sessions', 'submissions', 'user_locks'
+								)
+						`)
+					).rows[0].count === 9,
+				'0001_staff_access_and_discord_attachments': async () =>
+					(
+						await client.query(`
+							SELECT COUNT(*)::int AS count
+							FROM information_schema.tables
+							WHERE table_schema = 'public'
+								AND table_name IN (
+									'rate_limit_buckets', 'role_blacklist',
+									'staff_grants', 'submission_replies'
+								)
+						`)
+					).rows[0].count === 4,
+				'0002_retired_question_files': async () =>
+					(
+						await client.query(`
+							SELECT EXISTS (
+								SELECT 1 FROM information_schema.tables
+								WHERE table_schema = 'public' AND table_name = 'retired_question_files'
+							)
+						`)
+					).rows[0].exists,
+				'0003_applicant_review_message': async () =>
+					(
+						await client.query(`
+							SELECT EXISTS (
+								SELECT 1 FROM information_schema.columns
+								WHERE table_schema = 'public'
+									AND table_name = 'submissions'
+									AND column_name = 'review_message_id'
+							)
+						`)
+					).rows[0].exists,
+				'0004_remove_server_blacklists': async () =>
+					!(
+						await client.query(`
+							SELECT EXISTS (
+								SELECT 1 FROM information_schema.tables
+								WHERE table_schema = 'public'
+									AND table_name IN ('guild_blacklist', 'role_blacklist')
+							)
+						`)
+					).rows[0].exists,
+				'0005_keep_submissions_permanently': async () =>
+					!(
+						await client.query(`
+							SELECT EXISTS (
+								SELECT 1 FROM information_schema.columns
+								WHERE table_schema = 'public'
+									AND table_name = 'submissions'
+									AND column_name = 'expires_at'
+							)
+						`)
+					).rows[0].exists,
+				'0006_session_review_page': async () =>
+					(
+						await client.query(`
+							SELECT EXISTS (
+								SELECT 1 FROM information_schema.columns
+								WHERE table_schema = 'public'
+									AND table_name = 'sessions'
+									AND column_name = 'review_page'
+							)
+						`)
+					).rows[0].exists
+			};
+
+			for (const migration of journal.entries) {
+				const migrationPath = join(migrationsFolder, `${migration.tag}.sql`);
+				const sql = readFileSync(migrationPath, 'utf8');
+				const hash = createHash('sha256').update(sql).digest('hex');
+				const applied = await client.query(
+					'SELECT 1 FROM public.__drizzle_migrations WHERE hash = $1 LIMIT 1',
+					[hash]
+				);
+				if (
+					(applied.rowCount ?? 0) === 0 &&
+					(await migrationSignatures[migration.tag]?.())
+				) {
+					await client.query(
+						'INSERT INTO public.__drizzle_migrations (hash, created_at) VALUES ($1, $2)',
+						[hash, migration.when]
+					);
+				}
+			}
+
 			for (const migration of journal.entries) {
 				const migrationPath = join(migrationsFolder, `${migration.tag}.sql`);
 				const sql = readFileSync(migrationPath, 'utf8');
