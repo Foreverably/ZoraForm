@@ -188,12 +188,18 @@ export function createPostgresConnection(connectionString: string) {
 					for (const statement of sql.split('--> statement-breakpoint')) {
 						if (statement.trim()) {
 							try {
+								await client.query('SAVEPOINT migration_statement');
 								await client.query(statement);
+								await client.query('RELEASE SAVEPOINT migration_statement');
 							} catch (error) {
 								const code = (error as { code?: string }).code;
-								if (!['42P07', '42701', '42710'].includes(code ?? '')) {
-									throw error;
+								if (['42P07', '42701', '42710'].includes(code ?? '')) {
+									await client.query('ROLLBACK TO SAVEPOINT migration_statement');
+									await client.query('RELEASE SAVEPOINT migration_statement');
+									continue;
 								}
+								await client.query('ROLLBACK TO SAVEPOINT migration_statement');
+								throw error;
 							}
 						}
 					}
