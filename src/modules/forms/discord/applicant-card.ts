@@ -60,11 +60,21 @@ export function applicantCard(user: User, member: GuildMember | null, submission
 		);
 	}
 
+	const details = [
+		`-# **Account created:** ${discordDate(user.createdTimestamp)}`,
+		`-# **Joined server:** ${member?.joinedTimestamp ? discordDate(member.joinedTimestamp) : member ? 'Unknown' : 'Not in this server'}`,
+		...(member?.premiumSinceTimestamp
+			? [`-# **Boosting since:** ${discordDate(member.premiumSinceTimestamp)}`]
+			: []),
+		...(member ? [`-# **Roles:** ${roleList(member)}`] : []),
+		`-# User ID: \`${user.id}\``
+	];
+
 	container.addSectionComponents(
 		new SectionBuilder()
 			.addTextDisplayComponents(
 				new TextDisplayBuilder().setContent(
-					`## <@${user.id}>'s ${safe(submission.snapshot.name)}\n**${label}**${submission.reviewerId ? ` by <@${submission.reviewerId}>` : ''}`
+					`## <@${user.id}>'s ${safe(submission.snapshot.name)}\n**${label}**${submission.reviewerId ? ` by <@${submission.reviewerId}>` : ''}\n${details.join('\n')}`
 				)
 			)
 			.setThumbnailAccessory(
@@ -72,16 +82,6 @@ export function applicantCard(user: User, member: GuildMember | null, submission
 			)
 	);
 
-	const details = [
-		`-# **Account created:** ${discordDate(user.createdTimestamp)}`,
-		`-# **Joined server:** ${member?.joinedTimestamp ? discordDate(member.joinedTimestamp) : member ? 'Unknown' : 'Not in this server'}`,
-		...(member?.premiumSinceTimestamp
-			? [`*-# *Boosting since:** ${discordDate(member.premiumSinceTimestamp)}`]
-			: []),
-		...(member ? [`-# **Roles:** ${roleList(member)}`] : []),
-		`-# User ID: \`${user.id}\``
-	];
-	container.addTextDisplayComponents(new TextDisplayBuilder().setContent(details.join('\n')));
 
 	return {
 		components: [container],
