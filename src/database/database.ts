@@ -187,7 +187,14 @@ export function createPostgresConnection(connectionString: string) {
 				try {
 					for (const statement of sql.split('--> statement-breakpoint')) {
 						if (statement.trim()) {
-							await client.query(statement);
+							try {
+								await client.query(statement);
+							} catch (error) {
+								const code = (error as { code?: string }).code;
+								if (!['42P07', '42701', '42710'].includes(code ?? '')) {
+									throw error;
+								}
+							}
 						}
 					}
 					await client.query(
