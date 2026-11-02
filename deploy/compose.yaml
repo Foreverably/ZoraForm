@@ -1,28 +1,35 @@
 name: zoraforms
+
 services:
-    postgres:
-        image: postgres:17-alpine
-        restart: unless-stopped
-        environment:
-            POSTGRES_DB: zoraforms
-            POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
-        ports:
-            - '127.0.0.1:5432:5432'
-        volumes:
-            - postgres_data:/var/lib/postgresql/data
-            - ./init.sh:/docker-entrypoint-initdb.d/10-app.sh:ro
-        secrets:
-            - postgres_password
-            - app_password
-        healthcheck:
-            test: ['CMD-SHELL', 'pg_isready -U postgres -d zoraforms']
-            interval: 5s
-            timeout: 5s
-            retries: 12
-secrets:
-    postgres_password:
-        file: ./.secrets/postgres
-    app_password:
-        file: ./.secrets/app
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: zoraformsdata
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sh:/docker-entrypoint-initdb.d/10-app.sh:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d zoraformsdata']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  bot:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      BotName: ${BotName:-ZoraForms}
+      DISCORD_TOKEN: ${DISCORD_TOKEN:?Set DISCORD_TOKEN}
+      NODE_ENV: production
+      DATABASE_URL: postgresql://zoraforms:${POSTGRES_PASSWORD}@postgres:5432/zoraformsdata
+
 volumes:
-    postgres_data:
+  postgres_data:
