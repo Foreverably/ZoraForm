@@ -18,6 +18,30 @@ const client = new SapphireClient({
 let runtime: ReturnType<typeof createRuntime> | undefined;
 let shuttingDown = false;
 
+function findPostgresError(error: unknown): Record<string, unknown> | undefined {
+	const visited = new Set<unknown>();
+	const pending = [error];
+
+	while (pending.length > 0) {
+		const current = pending.pop();
+		if (!current || typeof current !== 'object' || visited.has(current)) {
+			continue;
+		}
+
+		visited.add(current);
+		const record = current as Record<string, unknown>;
+		if ('code' in record && typeof record.code === 'string') {
+			return record;
+		}
+
+		if ('cause' in record) {
+			pending.push(record.cause);
+		}
+	}
+
+	return undefined;
+}
+
 async function shutdown() {
 	if (shuttingDown) {
 		return;
@@ -54,16 +78,26 @@ async function main() {
 			error instanceof Error
 				? error.message.replace(/postgres(?:ql)?:\/\/[^@\s]+@/gi, 'postgres://[redacted]@')
 				: String(error);
-		const postgresError =
-			error instanceof Error
-				? (error as Error & { code?: string; cause?: { code?: string } })
+		const postgresError = findPostgresError(error);
+		const postgresCode =
+			postgresError && typeof postgresError === 'object' && 'code' in postgresError
+				? postgresError.code
 				: undefined;
-		const postgresCode = postgresError?.code ?? postgresError?.cause?.code;
+		const postgresDetail =
+			postgresError && typeof postgresError === 'object' && 'detail' in postgresError
+				? postgresError.detail
+				: undefined;
 		const detail =
 			postgresCode === '42501'
 				? ' Database privileges are insufficient; grant CREATE on the database and ownership/usage of its public schema.'
 				: '';
 		client.logger.error(`Startup failed: ${message}`);
+		if (postgresCode) {
+			client.logger.error(`PostgreSQL code: ${postgresCode}`);
+		}
+		if (typeof postgresDetail === 'string' && postgresDetail.trim()) {
+			client.logger.error(`PostgreSQL detail: ${postgresDetail}`);
+		}
 		if (detail) {
 			client.logger.error(detail.trim());
 		}

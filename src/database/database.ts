@@ -18,7 +18,11 @@ export function createPostgresConnection(connectionString: string) {
 
 	return {
 		database,
-		applyMigrations: () => migrate(database, { migrationsFolder: join(rootDir, 'drizzle') }),
+		applyMigrations: () =>
+			migrate(database, {
+				migrationsFolder: join(rootDir, 'drizzle'),
+				migrationsSchema: 'public'
+			}),
 		close: () => connectionPool.end()
 	};
 }
