@@ -9,6 +9,7 @@ Requires Node.js 22.12 or newer, npm, PostgreSQL, and a Discord application inst
 1. Run `npm ci`.
 2. Copy `.env.example` to `.env` and configure `BotName`, `DISCORD_TOKEN`, and `DATABASE_URL`. The displayed bot name accepts 1–50 characters.
 3. Make sure PostgreSQL is running and that `DATABASE_URL` points to it.
+   Use the connection URI format `postgresql://USER:PASSWORD@HOST:PORT/DATABASE`. Coolify variables must be available directly to the bot container; do not wrap values in quotes or the `postgresql://` scheme in parentheses.
 4. Run `npm run build` and `npm start`. Committed Drizzle migrations are applied before Discord login.
 5. Use `/ping` after Discord registers the commands.
 

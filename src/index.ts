@@ -44,12 +44,17 @@ async function main() {
 	try {
 		getBotName();
 		runtime = createRuntime(client, databaseUrl);
+		client.logger.info('Applying database migrations...');
 		await runtime.connection.applyMigrations();
+		client.logger.info('Database migrations applied.');
 		await client.login(token);
-	} catch {
-		client.logger.error(
-			'Startup failed. Check the database connection, migrations, and Discord token.'
-		);
+		client.logger.info('Discord login succeeded.');
+	} catch (error) {
+		const message =
+			error instanceof Error
+				? error.message.replace(/postgres(?:ql)?:\/\/[^@\s]+@/gi, 'postgres://[redacted]@')
+				: String(error);
+		client.logger.error(`Startup failed: ${message}`);
 		await shutdown();
 		process.exitCode = 1;
 	}
