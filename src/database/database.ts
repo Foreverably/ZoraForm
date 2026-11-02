@@ -71,15 +71,29 @@ export function createPostgresConnection(connectionString: string) {
 				'0001_staff_access_and_discord_attachments': async () =>
 					(
 						await client.query(`
-							SELECT COUNT(*)::int AS count
-							FROM information_schema.tables
-							WHERE table_schema = 'public'
-								AND table_name IN (
-									'rate_limit_buckets', 'role_blacklist',
-									'staff_grants', 'submission_replies'
-								)
+							SELECT
+								(
+									SELECT COUNT(*)::int
+									FROM information_schema.tables
+									WHERE table_schema = 'public'
+										AND table_name IN (
+											'rate_limit_buckets', 'role_blacklist',
+											'staff_grants', 'submission_replies'
+										)
+								) = 4
+								AND (
+									SELECT COUNT(*)::int
+									FROM information_schema.columns
+									WHERE table_schema = 'public'
+										AND table_name = 'files'
+										AND column_name IN (
+											'source_channel_id',
+											'source_message_id',
+											'source_attachment_id'
+										)
+								) = 3 AS complete
 						`)
-					).rows[0].count === 4,
+					).rows[0].complete,
 				'0002_retired_question_files': async () =>
 					(
 						await client.query(`
