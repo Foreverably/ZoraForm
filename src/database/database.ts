@@ -35,7 +35,7 @@ export function createPostgresConnection(connectionString: string) {
 				await client.query(`
 					CREATE TABLE IF NOT EXISTS public.__drizzle_migrations (
 						id serial PRIMARY KEY,
-						hash text NOT NULL,
+							hash text NOT NULL UNIQUE,
 						created_at bigint
 					)
 				`);
@@ -49,15 +49,14 @@ export function createPostgresConnection(connectionString: string) {
 				'0000_breezy_lady_mastermind': async () =>
 					(
 						await client.query(`
-							SELECT COUNT(*)::int AS count
+							SELECT EXISTS (
+								SELECT 1
 							FROM information_schema.tables
 							WHERE table_schema = 'public'
-								AND table_name IN (
-									'audit_events', 'files', 'forms', 'guild_blacklist', 'jobs',
-									'processed_inputs', 'sessions', 'submissions', 'user_locks'
-								)
+								AND table_name = 'audit_events'
+							) AS exists
 						`)
-					).rows[0].count === 9,
+					).rows[0].exists,
 				'0001_staff_access_and_discord_attachments': async () =>
 					(
 						await client.query(`
@@ -137,7 +136,7 @@ export function createPostgresConnection(connectionString: string) {
 					(await migrationSignatures[migration.tag]?.())
 				) {
 					await client.query(
-						'INSERT INTO public.__drizzle_migrations (hash, created_at) VALUES ($1, $2)',
+						'INSERT INTO public.__drizzle_migrations (hash, created_at) VALUES ($1, $2) ON CONFLICT (hash) DO NOTHING',
 						[hash, migration.when]
 					);
 				}

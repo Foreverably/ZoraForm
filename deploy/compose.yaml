@@ -5,14 +5,17 @@ services:
     image: postgres:17-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: zoraformsdata
+      POSTGRES_DB: ${POSTGRES_DATABASE:-zoraformsdata}
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      POSTGRES_APP_USER: ${POSTGRES_APP_USER:-zoraforms}
+    ports:
+      - '${POSTGRES_PUBLIC_PORT:-5432}:5432'
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./init.sh:/docker-entrypoint-initdb.d/10-app.sh:ro
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U postgres -d zoraformsdata']
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d ${POSTGRES_DATABASE:-zoraformsdata}']
       interval: 5s
       timeout: 5s
       retries: 12
@@ -29,7 +32,11 @@ services:
       BotName: ${BotName:-ZoraForms}
       DISCORD_TOKEN: ${DISCORD_TOKEN:?Set DISCORD_TOKEN}
       NODE_ENV: production
-      DATABASE_URL: postgresql://zoraforms:${POSTGRES_PASSWORD}@postgres:5432/zoraformsdata
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DATABASE: ${POSTGRES_DATABASE:-zoraformsdata}
+      POSTGRES_APP_USER: ${POSTGRES_APP_USER:-zoraforms}
+      DATABASE_URL: postgresql://${POSTGRES_APP_USER:-zoraforms}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DATABASE:-zoraformsdata}
 
 volumes:
   postgres_data:
