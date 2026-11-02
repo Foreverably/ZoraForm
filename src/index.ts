@@ -54,7 +54,19 @@ async function main() {
 			error instanceof Error
 				? error.message.replace(/postgres(?:ql)?:\/\/[^@\s]+@/gi, 'postgres://[redacted]@')
 				: String(error);
+		const postgresError =
+			error instanceof Error
+				? (error as Error & { code?: string; cause?: { code?: string } })
+				: undefined;
+		const postgresCode = postgresError?.code ?? postgresError?.cause?.code;
+		const detail =
+			postgresCode === '42501'
+				? ' Database privileges are insufficient; grant CREATE on the database and ownership/usage of its public schema.'
+				: '';
 		client.logger.error(`Startup failed: ${message}`);
+		if (detail) {
+			client.logger.error(detail.trim());
+		}
 		await shutdown();
 		process.exitCode = 1;
 	}
